@@ -25,11 +25,11 @@ rage-formats = "0.1"
 | `.yft` fragment | yes | | `parse_yft` | `Fragment`: main drawable, physics children with transforms, bone pose |
 | `.ybn` collision | yes | | `parse_ybn` | the `phBound` tree; `Ybn::triangles()` flattens it to world space |
 | `.ynv` navmesh | yes | yes | `parse_ynv`, `serialize_ynv` | `Ynv`: polygons with vertices, flags and edge adjacency, portals, points |
-| `.ymap` placements | yes | | `parse_ymap_entities` | `YmapEntity` per entity, with `to_world()` |
-| `.ytyp` archetypes | yes | | `parse_ytyp` | every archetype's box and texture dictionary; each MLO's entities and rooms |
+| `.ymap` placements | yes | | `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapEntity` per entity, with `to_world()`; `MloInstance` per interior, with its default entity sets |
+| `.ytyp` archetypes | yes | | `parse_ytyp` | every archetype's box and texture dictionary; each MLO's entities, named rooms, portals and entity sets |
 | `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo` |
 | `gtxd.ymt` / `gtxd.meta` | yes | | `parse_txd_relationships` | texture dictionary parent chain |
-| RSC7 container | yes | yes | `prepare_rsc7`, `build_rsc7`, `build_rsc7_paged` | sections in, a valid file out |
+| RSC7 container | yes | yes | `prepare_rsc7`, `build_rsc7`, `build_rsc7_paged` | sections in, a valid file out; `is_fxap` names an escrowed FiveM asset instead |
 
 Hashing is `rage_joaat`, the Jenkins one-at-a-time every name in these
 formats is looked up by.
@@ -180,7 +180,9 @@ use rage_formats::parse_ytyp;
 
 let ytyp = parse_ytyp(&int_ytyp)?;
 for mlo in &ytyp.mlos {
-    for room in &mlo.rooms { println!("room {:?}..{:?}", room.bb_min, room.bb_max); }
+    for room in &mlo.rooms { println!("room {} {:?}..{:?}", room.name, room.bb_min, room.bb_max); }
+    for p in &mlo.portals { println!("portal {} -> {} ({} corners)", p.room_from, p.room_to, p.corners.len()); }
+    for s in &mlo.entity_sets { println!("set {:#010x}, {} entities", s.name_hash, s.entities.len()); }
     for e in &mlo.entities { println!("prop {:#010x} at {:?}", e.archetype_hash, e.position); }
 }
 let boxes: std::collections::HashMap<u32, _> = ytyp.archetypes.iter().map(|a| (a.name_hash, (a.bb_min, a.bb_max))).collect();
@@ -194,7 +196,7 @@ own `to_world` and then the MLO instance's.
 | Feature | Default | Effect |
 |---|:-:|---|
 | `image` | on | `to_rgba_image`, `fit_max_size`, `encode_image`, `ImageFormat`, re-exports `image` |
-| `test-support` | off | exposes `ydd::tests::minimal_ydr_sections` for downstream tests |
+| `test-support` | off | exposes `ydd::tests::minimal_ydr_sections` and `ytyp::tests::minimal_mlo_ytyp` for downstream tests |
 
 ## Testing
 

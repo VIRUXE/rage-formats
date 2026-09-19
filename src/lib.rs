@@ -23,7 +23,7 @@ mod rbf;
 
 pub use hash::rage_joaat;
 pub use math::{Vec2, Vec3, Vec4, Mat4};
-pub use resource::{build_rsc7, build_rsc7_paged, prepare_rsc7, rsc7_flags_for_pages, rsc7_flags_for_size, resource_size_from_flags, resource_version_from_flags,
+pub use resource::{build_rsc7, is_fxap, FXAP_MAGIC, build_rsc7_paged, prepare_rsc7, rsc7_flags_for_pages, rsc7_flags_for_size, resource_size_from_flags, resource_version_from_flags,
                    RSC7_MAGIC, RSC8_MAGIC, SYSTEM_BASE, GRAPHICS_BASE};
 pub use ytd::{parse_ytd, TextureFormat, YtdTexture};
 pub use ydd::{parse_ydd, parse_ydr, parse_drawables, Drawable, DrawableBounds, DrawableEntry,
@@ -36,7 +36,7 @@ pub use yft::{parse_yft, wheel_slot, Fragment, FragmentChild, FragmentPart, Whee
 pub use ymt::{parse_ymt, PedVariationInfo};
 pub use ytyp::{parse_archetype_txds, parse_ytyp, Archetype, ArchetypeTxd, MloDef, MloEntitySet, MloPortal, MloRoom, Ytyp};
 pub use gtxd::{parse_txd_relationships, TxdRelationship};
-pub use ymap::{parse_ymap_entities, YmapEntity};
+pub use ymap::{parse_ymap_entities, parse_ymap_mlo_instances, MloInstance, YmapEntity};
 pub use ybn::{parse_ybn, Bound, BoundGeometry, BoundKind, BoundTransform, BoundTriangle, Triangle, Ybn};
 pub use ynv::{parse_ynv, serialize_ynv, cell_bounds, cell_file_name, cell_for_position, NavEdge, NavEdgeEnd, NavPoint,
               NavPoly, NavPortal, Ynv, ADJACENT_NONE};

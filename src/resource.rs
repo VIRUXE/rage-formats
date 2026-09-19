@@ -9,6 +9,16 @@ use crate::math::{Vec3, Vec4};
 pub const RSC7_MAGIC: u32 = 0x37435352;
 /// "RSC8": the Gen9 resource header, not supported by this crate.
 pub const RSC8_MAGIC: u32 = 0x38435352;
+/// "FXAP": the header Cfx.re's asset escrow puts on an encrypted FiveM
+/// resource file. Its contents are not a RAGE resource at all, so nothing in
+/// this crate can read one — the point of recognising it is to say so.
+pub const FXAP_MAGIC: u32 = 0x5041_5846;
+
+/// True when `data` is an escrowed (encrypted) FiveM asset rather than a
+/// resource this crate can parse.
+pub fn is_fxap(data: &[u8]) -> bool {
+    data.len() >= 4 && u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4])) == FXAP_MAGIC
+}
 
 /// The resource version encoded in the two RSC7 flag words (system nibble
 /// high, graphics nibble low), e.g. 165 for a .ydr.
@@ -427,6 +437,16 @@ fn wrap_rsc7(version: u32, sys_flags: u32, gfx_flags: u32, body: &[u8]) -> Vec<u
 #[cfg(test)]
 mod writer_tests {
     use super::*;
+
+    #[test]
+    fn recognises_an_fxap_escrow_header() {
+        assert!(is_fxap(b"FXAPsome encrypted payload"));
+        assert_eq!(FXAP_MAGIC, u32::from_le_bytes(*b"FXAP"));
+        // Anything else, including a real resource and a too-short file.
+        assert!(!is_fxap(&RSC7_MAGIC.to_le_bytes()));
+        assert!(!is_fxap(b"FXA"));
+        assert!(!is_fxap(b""));
+    }
 
     #[test]
     fn flags_round_trip_through_size() {
