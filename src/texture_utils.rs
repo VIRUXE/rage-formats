@@ -205,6 +205,7 @@ fn decode_top_level(texture: &YtdTexture) -> Result<Vec<u8>> {
 }
 
 /// Decompresses the top mip level of `tex` and packs it into an `image::RgbaImage`.
+#[cfg(feature = "image")]
 pub fn to_rgba_image(tex: &YtdTexture) -> Result<image::RgbaImage> {
     let (width, height) = (tex.width as u32, tex.height as u32);
     let rgba = decompress_texture(tex)?;
@@ -215,6 +216,7 @@ pub fn to_rgba_image(tex: &YtdTexture) -> Result<image::RgbaImage> {
 
 /// Resizes `img` so its longest edge does not exceed `max_edge`, preserving aspect
 /// ratio. If the image already fits, it is returned unchanged.
+#[cfg(feature = "image")]
 pub fn fit_max_size(img: image::RgbaImage, max_edge: u32) -> image::RgbaImage {
     let (width, height) = img.dimensions();
     let longest = width.max(height);
@@ -232,6 +234,7 @@ pub fn fit_max_size(img: image::RgbaImage, max_edge: u32) -> image::RgbaImage {
 }
 
 /// Output image formats supported by [`encode_image`].
+#[cfg(feature = "image")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageFormat {
     Png,
@@ -239,6 +242,7 @@ pub enum ImageFormat {
     WebP,
 }
 
+#[cfg(feature = "image")]
 impl std::str::FromStr for ImageFormat {
     type Err = anyhow::Error;
 
@@ -252,6 +256,7 @@ impl std::str::FromStr for ImageFormat {
     }
 }
 
+#[cfg(feature = "image")]
 impl ImageFormat {
     pub fn extension(self) -> &'static str {
         match self {
@@ -262,6 +267,7 @@ impl ImageFormat {
     }
 }
 
+#[cfg(feature = "image")]
 impl std::fmt::Display for ImageFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.extension())
@@ -271,6 +277,7 @@ impl std::fmt::Display for ImageFormat {
 /// Encodes `img` in the given `format`. `quality` (0-100) is used for JPEG only;
 /// WebP is always encoded losslessly, so `quality` is ignored for it, and PNG has
 /// no quality setting either.
+#[cfg(feature = "image")]
 pub fn encode_image(img: &image::RgbaImage, format: ImageFormat, quality: u8) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let (width, height) = img.dimensions();
@@ -319,6 +326,7 @@ pub fn encode_image(img: &image::RgbaImage, format: ImageFormat, quality: u8) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "image")]
     use image::GenericImageView;
 
     fn texture(format: TextureFormat, pixel_data: Vec<u8>) -> YtdTexture {
@@ -355,6 +363,7 @@ mod tests {
     /// Real textures store the whole mip chain in `pixel_data`. Uncompressed
     /// formats used to expand all of it, producing a buffer several times too
     /// long, which blew up as an assertion inside the PNG encoder.
+    #[cfg(feature = "image")]
     #[test]
     fn uncompressed_formats_use_only_the_top_mip_level() {
         // 4x4 + 2x2 + 1x1 single-byte levels.
@@ -377,12 +386,14 @@ mod tests {
     }
 
     /// A buffer that cannot fill the top level is an error, not a panic.
+    #[cfg(feature = "image")]
     #[test]
     fn short_pixel_buffers_are_reported_as_errors() {
         let tex = texture(TextureFormat::A8, vec![0x10; 4]);
         assert!(to_rgba_image(&tex).is_err());
     }
 
+    #[cfg(feature = "image")]
     #[test]
     fn uncompressed_argb_is_reordered() {
         // One BGRA-ordered texel on disk: B=0x11, G=0x22, R=0x33, A=0x44.
@@ -397,6 +408,7 @@ mod tests {
 
     /// The length check belongs to `decompress_texture`, so every caller sees
     /// truncated input as an error and not just `to_rgba_image`.
+    #[cfg(feature = "image")]
     #[test]
     fn decompress_texture_rejects_a_short_buffer() {
         let tex = texture(TextureFormat::A8, vec![0x10; 4]);
@@ -500,6 +512,8 @@ mod tests {
         assert_eq!(rgba, vec![0, 0, 255, 255], "blue-only A1R5G5B5 must not leak into red");
     }
 
+    #[cfg(feature = "image")]
+    #[cfg(feature = "image")]
     #[test]
     fn to_rgba_image_dimensions() {
         let tex = YtdTexture {
@@ -517,6 +531,8 @@ mod tests {
         assert_eq!(img.dimensions(), (2, 3));
     }
 
+    #[cfg(feature = "image")]
+    #[cfg(feature = "image")]
     #[test]
     fn fit_max_size_keeps_aspect() {
         let img = image::RgbaImage::new(400, 200);
@@ -533,6 +549,8 @@ mod tests {
 
     /// A JPEG is encoded from a hand-packed RGB buffer, so a channel slip
     /// there would swap colours without changing the image's size.
+    #[cfg(feature = "image")]
+    #[cfg(feature = "image")]
     #[test]
     fn jpeg_keeps_the_colours_in_order() {
         let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 40, 90, 255]));
@@ -544,6 +562,8 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "image")]
+    #[cfg(feature = "image")]
     #[test]
     fn encode_png_jpeg_webp_roundtrip() {
         let mut img = image::RgbaImage::new(4, 4);
@@ -563,6 +583,8 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "image")]
+    #[cfg(feature = "image")]
     #[test]
     fn image_format_from_str() {
         assert_eq!("png".parse::<ImageFormat>().unwrap(), ImageFormat::Png);

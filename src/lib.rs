@@ -1,0 +1,40 @@
+//! RAGE resource formats: the RSC7-wrapped files GTA V streams — textures
+//! (`.ytd`), drawables (`.ydr`/`.ydd`), fragments (`.yft`), archetype and
+//! ped metadata (`.ytyp`/`.ymt`), texture-dictionary relationships
+//! (`gtxd.ymt`) — parsed from bytes into plain Rust structs. Getting those
+//! bytes out of an `.rpf` is the `rpf-archive` crate's job; drawing them is
+//! `rage-render`'s.
+
+pub mod hash;
+pub mod math;
+pub mod resource;
+pub mod vertex;
+pub mod ytd;
+pub mod ydd;
+pub mod yft;
+pub mod ymt;
+pub mod ytyp;
+pub mod gtxd;
+pub mod texture_utils;
+mod rbf;
+
+pub use hash::rage_joaat;
+pub use math::{Vec2, Vec3, Vec4, Mat4};
+pub use resource::{prepare_rsc7, resource_size_from_flags, resource_version_from_flags,
+                   RSC7_MAGIC, RSC8_MAGIC, SYSTEM_BASE, GRAPHICS_BASE};
+pub use ytd::{parse_ytd, TextureFormat, YtdTexture};
+pub use ydd::{parse_ydd, parse_ydr, parse_drawables, Drawable, DrawableBounds, DrawableEntry,
+              DrawableGeometry, DrawableKind, DrawableLod, DrawableModel, GeometryBounds,
+              IndexBuffer, LodLevel, ShaderFx, ShaderGroup, ShaderParameter, ShaderParameterValue,
+              UnifiedVertex, VertexAttribute, VertexAttributeValue, VertexBuffer,
+              VertexBufferLayout, VertexComponent, VertexComponentType, VertexDeclaration,
+              VertexSemantic, BUMP_SAMPLER, DIFFUSE_SAMPLER, SPEC_SAMPLER, TEXTURE_SAMPLER};
+pub use yft::{parse_yft, wheel_slot, Fragment, FragmentChild, FragmentPart, WheelSlot};
+pub use ymt::{parse_ymt, PedVariationInfo};
+pub use ytyp::{parse_archetype_txds, ArchetypeTxd};
+pub use gtxd::{parse_txd_relationships, TxdRelationship};
+pub use texture_utils::decompress_texture;
+#[cfg(feature = "image")]
+pub use texture_utils::{to_rgba_image, fit_max_size, encode_image, ImageFormat};
+#[cfg(feature = "image")]
+pub use image;

@@ -1,8 +1,36 @@
 use anyhow::{bail, Result};
 use flate2::read::DeflateDecoder;
 use std::io::Read;
-use crate::archive::{resource_size_from_flags, RSC7_MAGIC};
 use crate::math::{Vec3, Vec4};
+
+/// "RSC7": the header on every GTA V resource file (.ydr/.ytd/.ybn/.ynv…).
+pub const RSC7_MAGIC: u32 = 0x37435352;
+/// "RSC8": the Gen9 resource header, not supported by this crate.
+pub const RSC8_MAGIC: u32 = 0x38435352;
+
+/// The resource version encoded in the two RSC7 flag words (system nibble
+/// high, graphics nibble low), e.g. 165 for a .ydr.
+pub fn resource_version_from_flags(sys_flags: u32, gfx_flags: u32) -> u32 {
+    let sv = (sys_flags  >> 28) & 0xF;
+    let gv = (gfx_flags  >> 28) & 0xF;
+    (sv << 4) | gv
+}
+
+/// Decodes an RSC7 flag word into the byte size of the section it describes.
+pub fn resource_size_from_flags(flags: u32) -> usize {
+    let s0 = ((flags >> 27) & 0x1)  << 0;
+    let s1 = ((flags >> 26) & 0x1)  << 1;
+    let s2 = ((flags >> 25) & 0x1)  << 2;
+    let s3 = ((flags >> 24) & 0x1)  << 3;
+    let s4 = ((flags >> 17) & 0x7F) << 4;
+    let s5 = ((flags >> 11) & 0x3F) << 5;
+    let s6 = ((flags >> 7)  & 0xF)  << 6;
+    let s7 = ((flags >> 5)  & 0x3)  << 7;
+    let s8 = ((flags >> 4)  & 0x1)  << 8;
+    let ss = (flags & 0xF) as usize;
+    let base_size = 0x200usize << ss;
+    base_size * (s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8) as usize
+}
 
 pub const SYSTEM_BASE: u64 = 0x5000_0000;
 pub const GRAPHICS_BASE: u64 = 0x6000_0000;

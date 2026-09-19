@@ -165,7 +165,7 @@ fn parse_archetype_txds_from_reader(reader: &ResReader<'_>) -> Result<Vec<Archet
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::writer::rage_joaat;
+    use crate::hash::rage_joaat;
 
     #[test]
     fn structure_hashes_match_codewalkers_metaname_enum() {

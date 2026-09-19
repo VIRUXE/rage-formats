@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use crate::math::{Mat4, Vec3};
 use crate::resource::{f32_le, u16_le, u32_le, u64_le, vec3_le, vec4_le, prepare_rsc7, ResReader, SYSTEM_BASE};
-use crate::writer::rage_joaat;
+use crate::hash::rage_joaat;
 use crate::ydd::{parse_drawable_at, Drawable, DrawableEntry};
 
 /// A fragment's renderable content.

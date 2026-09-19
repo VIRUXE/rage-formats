@@ -11,7 +11,7 @@ use crate::resource::{
     f32_le, u16_le, u32_le, u64_le, vec3_le, vec4_le, prepare_rsc7, ResReader, SYSTEM_BASE,
 };
 use crate::vertex::parse_vertex_buffer_at;
-use crate::writer::rage_joaat;
+use crate::hash::rage_joaat;
 use crate::ytd::{parse_texture_dict_at, YtdTexture};
 
 /// `rage_joaat("diffusesampler")` — the shader parameter naming the albedo map.
@@ -979,11 +979,12 @@ fn bounds_describe(bounds: &DrawableBounds, min: Vec3, max: Vec3) -> bool {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod tests {
     use super::*;
     use crate::resource::{GRAPHICS_BASE, SYSTEM_BASE};
-    use crate::writer::rage_joaat;
+    use crate::hash::rage_joaat;
 
     fn sections_reader<'a>(system: &'a [u8], graphics: &'a [u8]) -> ResReader<'a> {
         ResReader { system, graphics }
@@ -1585,7 +1586,7 @@ pub(crate) mod tests {
 
     /// A hand-built YDR (or YDD, when `as_dictionary`) resource: one drawable
     /// with one shader, one high LOD model and one three-vertex triangle.
-    pub(crate) fn minimal_ydr_sections(as_dictionary: bool) -> (Vec<u8>, Vec<u8>) {
+    pub fn minimal_ydr_sections(as_dictionary: bool) -> (Vec<u8>, Vec<u8>) {
         let mut system = vec![0u8; 0x800];
         let mut graphics = vec![0u8; 0x200];
         let drawable_offset = if as_dictionary { 0x100 } else { 0x000 };
