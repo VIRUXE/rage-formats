@@ -95,3 +95,37 @@ fn ymap_entities_parse() {
     }
     assert!(!entities.is_empty());
 }
+
+#[test]
+#[ignore]
+fn ytyp_mlo_parses() {
+    let Ok(dir) = std::env::var("RAGE_TEST_MLO_DIR") else { return };
+    let dir = std::path::Path::new(&dir);
+    let mut names = std::collections::HashMap::new();
+    for entry in std::fs::read_dir(dir.join("ydr")).unwrap().flatten() {
+        let stem = entry.path().file_stem().unwrap().to_string_lossy().to_lowercase();
+        names.insert(rage_formats::rage_joaat(&stem), stem);
+    }
+    let mut all = rage_formats::Ytyp::default();
+    for entry in std::fs::read_dir(dir.join("ytyp")).unwrap().flatten() {
+        let y = rage_formats::parse_ytyp(&std::fs::read(entry.path()).unwrap()).unwrap();
+        println!("{}: {} archetypes, {} mlos", entry.path().display(), y.archetypes.len(), y.mlos.len());
+        all.archetypes.extend(y.archetypes);
+        all.mlos.extend(y.mlos);
+    }
+    let boxes: std::collections::HashMap<u32, &rage_formats::Archetype> = all.archetypes.iter().map(|a| (a.name_hash, a)).collect();
+    for mlo in &all.mlos {
+        println!("MLO {} ({} entities, {} rooms)", names.get(&mlo.name_hash).cloned().unwrap_or_default(), mlo.entities.len(), mlo.rooms.len());
+        for r in &mlo.rooms { println!("  room {:?}..{:?} flags {:#x}", r.bb_min, r.bb_max, r.flags); }
+        for e in &mlo.entities {
+            let name = names.get(&e.archetype_hash).cloned().unwrap_or_else(|| format!("{:#010x}", e.archetype_hash));
+            match boxes.get(&e.archetype_hash) {
+                Some(a) => println!("  {name:40} at ({:.2}, {:.2}, {:.2}) rot {:?} box {:.2}x{:.2}x{:.2} (z {:.2}..{:.2})",
+                    e.position.x, e.position.y, e.position.z, e.rotation,
+                    a.bb_max.x - a.bb_min.x, a.bb_max.y - a.bb_min.y, a.bb_max.z - a.bb_min.z, a.bb_min.z, a.bb_max.z),
+                None => println!("  {name:40} at ({:.2}, {:.2}, {:.2}) box unknown", e.position.x, e.position.y, e.position.z),
+            }
+        }
+    }
+    assert!(!all.mlos.is_empty());
+}

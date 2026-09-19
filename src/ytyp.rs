@@ -19,7 +19,9 @@
 // this deliberately does not reimplement.
 
 use anyhow::{bail, Context, Result};
-use crate::resource::{prepare_rsc7, u16_le, u32_le, u64_le, ResReader, SYSTEM_BASE};
+use crate::math::Vec3;
+use crate::resource::{f32_le, prepare_rsc7, u16_le, u32_le, u64_le, vec3_le, ResReader, SYSTEM_BASE};
+use crate::ymap::{read_entity, YmapEntity};
 
 /// Structure-name hashes as CodeWalker's `MetaName` enum defines them: the
 /// RAGE Jenkins hash of the exact-case structure name (unlike texture/file
@@ -28,6 +30,7 @@ const HASH_CMAPTYPES: u32 = 3_649_811_809;
 const HASH_CBASE_ARCHETYPE_DEF: u32 = 2_195_127_427;
 const HASH_CTIME_ARCHETYPE_DEF: u32 = 1_991_296_364;
 const HASH_CMLO_ARCHETYPE_DEF: u32 = 273_704_021;
+const HASH_CENTITYDEF: u32 = 3_461_354_627;
 
 /// One archetype's texture-dictionary binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +162,117 @@ fn parse_archetype_txds_from_reader(reader: &ResReader<'_>) -> Result<Vec<Archet
         out.push(ArchetypeTxd { name_hash, texture_dict_hash });
     }
 
+    Ok(out)
+}
+
+/// An archetype's placement-relevant fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Archetype {
+    /// `name` (or `assetName` when `name` is 0), lowercase JOAAT.
+    pub name_hash: u32,
+    pub bb_min: Vec3,
+    pub bb_max: Vec3,
+    pub lod_dist: f32,
+    /// `textureDictionary` hash, 0 when none.
+    pub texture_dict_hash: u32,
+    pub is_mlo: bool,
+}
+
+/// A room of an MLO, in MLO-local space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MloRoom {
+    pub bb_min: Vec3,
+    pub bb_max: Vec3,
+    pub flags: u32,
+}
+
+/// A `CMloArchetypeDef`: the interior's own entities (props, doors,
+/// furniture) placed relative to the MLO origin, and its rooms.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MloDef {
+    pub name_hash: u32,
+    pub entities: Vec<YmapEntity>,
+    pub rooms: Vec<MloRoom>,
+}
+
+/// Everything a `.ytyp` declares that placement work needs.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Ytyp {
+    pub archetypes: Vec<Archetype>,
+    pub mlos: Vec<MloDef>,
+}
+
+/// Parses every archetype (with bounding box) and every MLO definition
+/// (with its entities and rooms) out of a `.ytyp`.
+pub fn parse_ytyp(data: &[u8]) -> Result<Ytyp> {
+    let (system, graphics) = prepare_rsc7(data)?;
+    let reader = ResReader { system: &system, graphics: &graphics };
+    let blocks = read_meta_blocks(&reader)?;
+    let cmaptypes = blocks.iter().find(|b| b.name_hash == HASH_CMAPTYPES).context("ytyp: CMapTypes block not found")?;
+    const ARCHETYPES_FIELD_OFFSET: usize = 24;
+    if cmaptypes.data.len() < ARCHETYPES_FIELD_OFFSET + 16 {
+        bail!("ytyp: CMapTypes block too small");
+    }
+    let archetypes_pointer = u64_le(&cmaptypes.data, ARCHETYPES_FIELD_OFFSET);
+    let archetypes_count = u16_le(&cmaptypes.data, ARCHETYPES_FIELD_OFFSET + 8) as usize;
+    let Some((arr_block_idx, arr_offset)) = decode_meta_pointer(archetypes_pointer) else { return Ok(Ytyp::default()) };
+    let arr_block = blocks.get(arr_block_idx).context("ytyp: archetypes pointer block out of range")?;
+    let ptr_bytes = arr_block.data.get(arr_offset..arr_offset + archetypes_count * 8).context("ytyp: archetypes pointer array out of bounds")?;
+
+    let mut out = Ytyp::default();
+    for i in 0..archetypes_count {
+        let Some((bi, off)) = decode_meta_pointer(u64_le(ptr_bytes, i * 8)) else { continue };
+        let Some(block) = blocks.get(bi) else { continue };
+        let is_mlo = match block.name_hash {
+            HASH_CBASE_ARCHETYPE_DEF | HASH_CTIME_ARCHETYPE_DEF => false,
+            HASH_CMLO_ARCHETYPE_DEF => true,
+            _ => continue,
+        };
+        let Some(base) = block.data.get(off..off + 144) else { continue };
+        let mut name_hash = u32_le(base, 88);
+        if name_hash == 0 { name_hash = u32_le(base, 112); }
+        out.archetypes.push(Archetype {
+            name_hash,
+            bb_min: vec3_le(base, 32),
+            bb_max: vec3_le(base, 48),
+            lod_dist: f32_le(base, 8),
+            texture_dict_hash: u32_le(base, 92),
+            is_mlo,
+        });
+        if !is_mlo { continue; }
+        let Some(mlo) = block.data.get(off..off + 240) else { continue };
+
+        // entities: Array_StructurePointer at 152
+        let mut entities = Vec::new();
+        let ent_ptr = u64_le(mlo, 152);
+        let ent_count = u16_le(mlo, 160) as usize;
+        if let Some((ebi, eoff)) = decode_meta_pointer(ent_ptr) {
+            if let Some(eb) = blocks.get(ebi) {
+                if let Some(eptrs) = eb.data.get(eoff..eoff + ent_count * 8) {
+                    for k in 0..ent_count {
+                        let Some((cbi, coff)) = decode_meta_pointer(u64_le(eptrs, k * 8)) else { continue };
+                        let Some(cb) = blocks.get(cbi) else { continue };
+                        if cb.name_hash != HASH_CENTITYDEF { continue; }
+                        let Some(e) = cb.data.get(coff..coff + 128) else { continue };
+                        entities.push(read_entity(e, false));
+                    }
+                }
+            }
+        }
+        // rooms: Array_Structure of 112-byte CMloRoomDef at 168
+        let mut rooms = Vec::new();
+        let room_ptr = u64_le(mlo, 168);
+        let room_count = u16_le(mlo, 176) as usize;
+        if let Some((rbi, roff)) = decode_meta_pointer(room_ptr) {
+            if let Some(rb) = blocks.get(rbi) {
+                for k in 0..room_count {
+                    let Some(r) = rb.data.get(roff + k * 112..roff + (k + 1) * 112) else { break };
+                    rooms.push(MloRoom { bb_min: vec3_le(r, 32), bb_max: vec3_le(r, 48), flags: u32_le(r, 76) });
+                }
+            }
+        }
+        out.mlos.push(MloDef { name_hash, entities, rooms });
+    }
     Ok(out)
 }
 

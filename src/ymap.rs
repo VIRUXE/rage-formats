@@ -82,20 +82,25 @@ pub fn parse_ymap_entities(data: &[u8]) -> Result<Vec<YmapEntity>> {
             _ => continue,
         };
         let Some(e) = block.data.get(off..off + 128) else { continue };
-        out.push(YmapEntity {
-            archetype_hash: u32_le(e, 8),
-            flags: u32_le(e, 12),
-            guid: u32_le(e, 16),
-            position: vec3_le(e, 32),
-            rotation: [f32_le(e, 48), f32_le(e, 52), f32_le(e, 56), f32_le(e, 60)],
-            scale_xy: f32_le(e, 64),
-            scale_z: f32_le(e, 68),
-            parent_index: u32_le(e, 72) as i32,
-            lod_dist: f32_le(e, 76),
-            is_mlo_instance,
-        });
+        out.push(read_entity(e, is_mlo_instance));
     }
     Ok(out)
+}
+
+/// Decodes a `CEntityDef` (the first 128 bytes of a `CMloInstanceDef` too).
+pub(crate) fn read_entity(e: &[u8], is_mlo_instance: bool) -> YmapEntity {
+    YmapEntity {
+        archetype_hash: u32_le(e, 8),
+        flags: u32_le(e, 12),
+        guid: u32_le(e, 16),
+        position: vec3_le(e, 32),
+        rotation: [f32_le(e, 48), f32_le(e, 52), f32_le(e, 56), f32_le(e, 60)],
+        scale_xy: f32_le(e, 64),
+        scale_z: f32_le(e, 68),
+        parent_index: u32_le(e, 72) as i32,
+        lod_dist: f32_le(e, 76),
+        is_mlo_instance,
+    }
 }
 
 #[cfg(test)]

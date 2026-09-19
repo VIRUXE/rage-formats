@@ -34,7 +34,7 @@ pub use ydd::{parse_ydd, parse_ydr, parse_drawables, Drawable, DrawableBounds, D
               VertexSemantic, BUMP_SAMPLER, DIFFUSE_SAMPLER, SPEC_SAMPLER, TEXTURE_SAMPLER};
 pub use yft::{parse_yft, wheel_slot, Fragment, FragmentChild, FragmentPart, WheelSlot};
 pub use ymt::{parse_ymt, PedVariationInfo};
-pub use ytyp::{parse_archetype_txds, ArchetypeTxd};
+pub use ytyp::{parse_archetype_txds, parse_ytyp, Archetype, ArchetypeTxd, MloDef, MloRoom, Ytyp};
 pub use gtxd::{parse_txd_relationships, TxdRelationship};
 pub use ymap::{parse_ymap_entities, YmapEntity};
 pub use ybn::{parse_ybn, Bound, BoundGeometry, BoundKind, BoundTransform, BoundTriangle, Triangle, Ybn};
