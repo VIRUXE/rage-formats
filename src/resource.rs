@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
 use flate2::read::DeflateDecoder;
+use flate2::write::DeflateEncoder;
+use flate2::Compression;
 use std::io::Read;
 use crate::math::{Vec3, Vec4};
 
@@ -331,5 +333,87 @@ mod tests {
         assert_eq!(header.pointer, SYSTEM_BASE + 0x100);
         assert_eq!(header.count, 3);
         assert_eq!(header.capacity, 4);
+    }
+}
+
+// ─── writing ─────────────────────────────────────────────────────────────────
+
+/// The RSC7 flag word describing the smallest page set (largest pages first,
+/// per-size counts capped as the format caps them) that holds `size` bytes.
+/// The virtual size it encodes is what [`resource_size_from_flags`] returns,
+/// so callers pad their section to that.
+pub fn rsc7_flags_for_size(size: usize) -> Result<u32> {
+    for ss in 0u32..16 {
+        let base = 0x200usize << ss;
+        let mut units = size.div_ceil(base);
+        // (shift into the flag word, page size in units, max count)
+        let fields: [(u32, usize, usize); 9] = [
+            (4, 256, 1), (5, 128, 3), (7, 64, 15), (11, 32, 63), (17, 16, 127),
+            (24, 8, 1), (25, 4, 1), (26, 2, 1), (27, 1, 1),
+        ];
+        let mut flags = ss;
+        for (shift, page, cap) in fields {
+            let n = (units / page).min(cap);
+            units -= n * page;
+            flags |= (n as u32) << shift;
+        }
+        if units == 0 {
+            return Ok(flags);
+        }
+    }
+    bail!("{size} bytes is too large for an RSC7 section");
+}
+
+/// Wraps a system (and optional graphics) section in an RSC7 header with the
+/// given resource version and a deflated body, padding each section to the
+/// page layout its flags describe. Version is the pair of nibbles
+/// [`resource_version_from_flags`] reads back (e.g. 2 for a .ynv, 165 for a .ydr).
+pub fn build_rsc7(version: u32, system: &[u8], graphics: &[u8]) -> Vec<u8> {
+    let sys_flags = rsc7_flags_for_size(system.len().max(1)).expect("section fits") | ((version >> 4) & 0xF) << 28;
+    let gfx_flags = if graphics.is_empty() { 0 } else { rsc7_flags_for_size(graphics.len()).expect("section fits") }
+        | (version & 0xF) << 28;
+    let mut body = Vec::with_capacity(resource_size_from_flags(sys_flags) + resource_size_from_flags(gfx_flags));
+    body.extend_from_slice(system);
+    body.resize(resource_size_from_flags(sys_flags), 0);
+    body.extend_from_slice(graphics);
+    body.resize(resource_size_from_flags(sys_flags) + resource_size_from_flags(gfx_flags), 0);
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&RSC7_MAGIC.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
+    out.extend_from_slice(&sys_flags.to_le_bytes());
+    out.extend_from_slice(&gfx_flags.to_le_bytes());
+    let mut enc = DeflateEncoder::new(out, Compression::best());
+    std::io::Write::write_all(&mut enc, &body).expect("writing to a Vec cannot fail");
+    enc.finish().expect("writing to a Vec cannot fail")
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+
+    #[test]
+    fn flags_round_trip_through_size() {
+        for size in [1usize, 512, 8192, 24576 + 180224 + 32768, 237568, 1 << 20, 3_000_001] {
+            let flags = rsc7_flags_for_size(size).unwrap();
+            let virt = resource_size_from_flags(flags);
+            assert!(virt >= size, "{size}: {virt}");
+            assert!(virt < size + (0x200usize << (flags & 0xF)) * 256, "{size}: wasteful {virt}");
+        }
+        // The retail navmesh[108][96].ynv layout.
+        assert_eq!(resource_size_from_flags(0x0006_5880), 237568);
+    }
+
+    #[test]
+    fn build_rsc7_round_trips() {
+        let system: Vec<u8> = (0..5000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let file = build_rsc7(2, &system, &[]);
+        assert_eq!(u32::from_le_bytes(file[0..4].try_into().unwrap()), RSC7_MAGIC);
+        let sys_flags = u32::from_le_bytes(file[8..12].try_into().unwrap());
+        let gfx_flags = u32::from_le_bytes(file[12..16].try_into().unwrap());
+        assert_eq!(resource_version_from_flags(sys_flags, gfx_flags), 2);
+        let (sys, gfx) = prepare_rsc7(&file).unwrap();
+        assert_eq!(&sys[..system.len()], &system[..]);
+        assert!(gfx.is_empty());
     }
 }

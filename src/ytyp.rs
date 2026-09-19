@@ -40,16 +40,16 @@ pub struct ArchetypeTxd {
     pub texture_dict_hash: u32,
 }
 
-struct MetaBlock {
-    name_hash: u32,
-    data: Vec<u8>,
+pub(crate) struct MetaBlock {
+    pub(crate) name_hash: u32,
+    pub(crate) data: Vec<u8>,
 }
 
 /// Decodes a packed Meta-format pointer (distinct from the resource VAs
 /// used elsewhere: `block_id` in the low 12 bits, 1-based, an offset in the
 /// next 20) into a zero-based block index and byte offset. `None` for a
 /// null or zero-block pointer.
-fn decode_meta_pointer(raw: u64) -> Option<(usize, usize)> {
+pub(crate) fn decode_meta_pointer(raw: u64) -> Option<(usize, usize)> {
     let block_id = (raw & 0xFFF) as usize;
     if block_id == 0 {
         return None;
@@ -61,7 +61,7 @@ fn decode_meta_pointer(raw: u64) -> Option<(usize, usize)> {
 /// Reads every `MetaDataBlock` out of a .ytyp's `Meta` header at
 /// `SYSTEM_BASE`. The header is 0x70 (112) bytes; the fields we need are
 /// `DataBlocksPointer` at 0x30 and `DataBlocksCount` at 0x4C.
-fn read_meta_blocks(reader: &ResReader<'_>) -> Result<Vec<MetaBlock>> {
+pub(crate) fn read_meta_blocks(reader: &ResReader<'_>) -> Result<Vec<MetaBlock>> {
     let header = reader.resolve(SYSTEM_BASE, 0x70).context("ytyp: Meta header out of bounds")?;
 
     let data_blocks_pointer = u64_le(header, 0x30);

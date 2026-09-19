@@ -15,12 +15,15 @@ pub mod yft;
 pub mod ymt;
 pub mod ytyp;
 pub mod gtxd;
+pub mod ybn;
+pub mod ymap;
+pub mod ynv;
 pub mod texture_utils;
 mod rbf;
 
 pub use hash::rage_joaat;
 pub use math::{Vec2, Vec3, Vec4, Mat4};
-pub use resource::{prepare_rsc7, resource_size_from_flags, resource_version_from_flags,
+pub use resource::{build_rsc7, prepare_rsc7, rsc7_flags_for_size, resource_size_from_flags, resource_version_from_flags,
                    RSC7_MAGIC, RSC8_MAGIC, SYSTEM_BASE, GRAPHICS_BASE};
 pub use ytd::{parse_ytd, TextureFormat, YtdTexture};
 pub use ydd::{parse_ydd, parse_ydr, parse_drawables, Drawable, DrawableBounds, DrawableEntry,
@@ -33,6 +36,10 @@ pub use yft::{parse_yft, wheel_slot, Fragment, FragmentChild, FragmentPart, Whee
 pub use ymt::{parse_ymt, PedVariationInfo};
 pub use ytyp::{parse_archetype_txds, ArchetypeTxd};
 pub use gtxd::{parse_txd_relationships, TxdRelationship};
+pub use ymap::{parse_ymap_entities, YmapEntity};
+pub use ybn::{parse_ybn, Bound, BoundGeometry, BoundKind, BoundTransform, BoundTriangle, Triangle, Ybn};
+pub use ynv::{parse_ynv, serialize_ynv, cell_bounds, cell_file_name, cell_for_position, NavEdge, NavEdgeEnd, NavPoint,
+              NavPoly, NavPortal, Ynv, ADJACENT_NONE};
 pub use texture_utils::decompress_texture;
 #[cfg(feature = "image")]
 pub use texture_utils::{to_rgba_image, fit_max_size, encode_image, ImageFormat};
