@@ -267,7 +267,10 @@ pub struct MloPortal {
     pub room_to: u32,
     pub flags: u32,
     pub mirror_priority: u32,
-    pub opacity: f32,
+    /// 0..=255; how much the portal occludes what is behind it. Stored as an
+    /// integer in the Meta layout (CodeWalker `MetaTypes.cs`: `UnsignedInt` at
+    /// 24), unlike the PSO form of the same field.
+    pub opacity: u32,
     pub audio_occlusion: u32,
     /// The portal's corners, normally four, in winding order.
     pub corners: Vec<Vec3>,
@@ -377,7 +380,7 @@ pub fn parse_ytyp(data: &[u8]) -> Result<Ytyp> {
                 room_to: u32_le(p, 12),
                 flags: u32_le(p, 16),
                 mirror_priority: u32_le(p, 20),
-                opacity: f32_le(p, 24),
+                opacity: u32_le(p, 24),
                 audio_occlusion: u32_le(p, 28),
                 // Corners are stored as Vector4s; the w is padding.
                 corners: meta_array_records(&blocks, p, 32, 16).iter().map(|c| vec3_le(c, 0)).collect(),
@@ -634,7 +637,7 @@ pub mod tests {
         put_u32(&mut sys, p + 12, 2); // roomTo
         put_u32(&mut sys, p + 16, 4); // flags
         put_u32(&mut sys, p + 20, 3); // mirrorPriority
-        put_f32(&mut sys, p + 24, 0.5); // opacity
+        put_u32(&mut sys, p + 24, 128); // opacity
         put_u32(&mut sys, p + 28, 7); // audioOcclusion
         put_array(&mut sys, p + 32, 6, 0, 4); // corners
 
@@ -712,7 +715,7 @@ pub mod tests {
         assert_eq!(p.room_to, 2);
         assert_eq!(p.flags, 4);
         assert_eq!(p.mirror_priority, 3);
-        assert_eq!(p.opacity, 0.5);
+        assert_eq!(p.opacity, 128);
         assert_eq!(p.audio_occlusion, 7);
         assert_eq!(p.corners, MLO_PORTAL_CORNERS.to_vec());
         assert!(p.attached_objects.is_empty());
@@ -723,7 +726,7 @@ pub mod tests {
     #[test]
     fn portal_touching_room_zero_is_exterior() {
         let inside = MloPortal {
-            room_from: 1, room_to: 2, flags: 0, mirror_priority: 0, opacity: 1.0,
+            room_from: 1, room_to: 2, flags: 0, mirror_priority: 0, opacity: 255,
             audio_occlusion: 0, corners: Vec::new(), attached_objects: Vec::new(),
         };
         assert!(!inside.is_exterior());
