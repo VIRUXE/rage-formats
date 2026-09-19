@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use anyhow::{bail, Context, Result};
 
 use crate::math::Vec3;
-use crate::resource::{build_rsc7, prepare_rsc7, u16_le, u32_le, u64_le, vec3_le, ResReader, SYSTEM_BASE};
+use crate::resource::{build_rsc7_paged, prepare_rsc7, u16_le, u32_le, u64_le, vec3_le, ResReader, SYSTEM_BASE};
 
 /// "No neighbour" on an edge: the 14-bit all-ones area/poly id.
 pub const ADJACENT_NONE: u32 = 0x3FFF;
@@ -597,7 +597,7 @@ pub fn serialize_ynv(ynv: &Ynv) -> Result<Vec<u8>> {
     put_u32(&mut h, 0x160, ynv.version_unk2);
     w.patch(main, &h);
 
-    Ok(build_rsc7(2, &w.finish(), &[]))
+    build_rsc7_paged(2, &w.finish(), PAGE_SIZE)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -672,7 +672,13 @@ fn write_sector(
     node
 }
 
-/// Sequential, 16-byte-aligned system-section layout with pointer patching.
+/// System-section page size used for written navmeshes. The game maps each
+/// RSC7 page as its own allocation and relocates pointers page by page, so a
+/// block must never straddle a page boundary; 16 KiB is the largest block a
+/// navmesh list part can be.
+const PAGE_SIZE: usize = 16384;
+
+/// Page-aware, 16-byte-aligned system-section layout with pointer patching.
 struct BlockWriter {
     buf: Vec<u8>,
 }
@@ -680,9 +686,16 @@ struct BlockWriter {
 impl BlockWriter {
     fn new() -> Self { Self { buf: Vec::new() } }
 
-    /// Reserves `size` zeroed bytes and returns their virtual address.
+    /// Reserves `size` zeroed bytes, never across a page boundary, and
+    /// returns their virtual address.
     fn alloc(&mut self, size: usize) -> u64 {
+        assert!(size <= PAGE_SIZE, "block of {size} bytes exceeds the {PAGE_SIZE}-byte page");
         while self.buf.len() % 16 != 0 { self.buf.push(0); }
+        let in_page = self.buf.len() % PAGE_SIZE;
+        if in_page + size > PAGE_SIZE {
+            let pad = PAGE_SIZE - in_page;
+            self.buf.resize(self.buf.len() + pad, 0);
+        }
         let off = self.buf.len();
         self.buf.resize(off + size, 0);
         SYSTEM_BASE + off as u64

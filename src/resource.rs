@@ -364,6 +364,38 @@ pub fn rsc7_flags_for_size(size: usize) -> Result<u32> {
     bail!("{size} bytes is too large for an RSC7 section");
 }
 
+/// The flag word for `count` pages of exactly `page_size` bytes each (a
+/// power of two times 0x200). Every block in the section must then sit
+/// inside one page: the game maps pages as separate allocations.
+pub fn rsc7_flags_for_pages(page_size: usize, count: usize) -> Result<u32> {
+    // (shift into the flag word, page size in base units, max count)
+    let fields: [(u32, usize, usize); 9] = [
+        (27, 1, 1), (26, 2, 1), (25, 4, 1), (24, 8, 1), (17, 16, 127), (11, 32, 63), (7, 64, 15), (5, 128, 3), (4, 256, 1),
+    ];
+    for ss in 0u32..16 {
+        let base = 0x200usize << ss;
+        if page_size < base { break; }
+        for (shift, units, cap) in fields {
+            if base * units == page_size && count <= cap {
+                return Ok(ss | ((count as u32) << shift));
+            }
+        }
+    }
+    bail!("{count} pages of {page_size} bytes cannot be described by RSC7 flags");
+}
+
+/// [`build_rsc7`] for a system section laid out in equal pages of
+/// `page_size` bytes (no graphics section): the section is padded to a
+/// whole number of pages and the flags describe exactly those pages.
+pub fn build_rsc7_paged(version: u32, system: &[u8], page_size: usize) -> Result<Vec<u8>> {
+    let pages = system.len().div_ceil(page_size).max(1);
+    let sys_flags = rsc7_flags_for_pages(page_size, pages)? | ((version >> 4) & 0xF) << 28;
+    let gfx_flags = (version & 0xF) << 28;
+    let mut body = system.to_vec();
+    body.resize(pages * page_size, 0);
+    Ok(wrap_rsc7(version, sys_flags, gfx_flags, &body))
+}
+
 /// Wraps a system (and optional graphics) section in an RSC7 header with the
 /// given resource version and a deflated body, padding each section to the
 /// page layout its flags describe. Version is the pair of nibbles
@@ -378,13 +410,17 @@ pub fn build_rsc7(version: u32, system: &[u8], graphics: &[u8]) -> Vec<u8> {
     body.extend_from_slice(graphics);
     body.resize(resource_size_from_flags(sys_flags) + resource_size_from_flags(gfx_flags), 0);
 
+    wrap_rsc7(version, sys_flags, gfx_flags, &body)
+}
+
+fn wrap_rsc7(version: u32, sys_flags: u32, gfx_flags: u32, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&RSC7_MAGIC.to_le_bytes());
     out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&sys_flags.to_le_bytes());
     out.extend_from_slice(&gfx_flags.to_le_bytes());
     let mut enc = DeflateEncoder::new(out, Compression::best());
-    std::io::Write::write_all(&mut enc, &body).expect("writing to a Vec cannot fail");
+    std::io::Write::write_all(&mut enc, body).expect("writing to a Vec cannot fail");
     enc.finish().expect("writing to a Vec cannot fail")
 }
 
@@ -402,6 +438,16 @@ mod writer_tests {
         }
         // The retail navmesh[108][96].ynv layout.
         assert_eq!(resource_size_from_flags(0x0006_5880), 237568);
+    }
+
+    #[test]
+    fn page_flags_describe_equal_pages() {
+        let flags = rsc7_flags_for_pages(16384, 8).unwrap();
+        assert_eq!(resource_size_from_flags(flags), 8 * 16384);
+        let file = build_rsc7_paged(2, &[7u8; 40000], 16384).unwrap();
+        let sys_flags = u32::from_le_bytes(file[8..12].try_into().unwrap());
+        assert_eq!(resource_size_from_flags(sys_flags), 3 * 16384);
+        assert!(rsc7_flags_for_pages(16384, 10_000).is_err());
     }
 
     #[test]
