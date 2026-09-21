@@ -12,13 +12,20 @@ pub mod vertex;
 pub mod ytd;
 pub mod ydd;
 pub mod yft;
+#[cfg(feature = "meta")]
 pub mod ymt;
+#[cfg(feature = "meta")]
 pub mod ytyp;
+#[cfg(feature = "gtxd")]
 pub mod gtxd;
+#[cfg(feature = "collision")]
 pub mod ybn;
+#[cfg(feature = "meta")]
 pub mod ymap;
+#[cfg(feature = "nav")]
 pub mod ynv;
 pub mod texture_utils;
+#[cfg(feature = "gtxd")]
 mod rbf;
 
 pub use hash::rage_joaat;
@@ -32,12 +39,19 @@ pub use ydd::{parse_ydd, parse_ydr, parse_drawables, Drawable, DrawableBounds, D
               UnifiedVertex, VertexAttribute, VertexAttributeValue, VertexBuffer,
               VertexBufferLayout, VertexComponent, VertexComponentType, VertexDeclaration,
               VertexSemantic, BUMP_SAMPLER, DIFFUSE_SAMPLER, SPEC_SAMPLER, TEXTURE_SAMPLER};
+pub use vertex::{parse_gen9_declaration, G9_DECLARATION_SIZE, G9_FORMAT_COUNT};
 pub use yft::{parse_yft, wheel_slot, Fragment, FragmentChild, FragmentPart, WheelSlot};
+#[cfg(feature = "meta")]
 pub use ymt::{parse_ymt, PedVariationInfo};
+#[cfg(feature = "meta")]
 pub use ytyp::{parse_archetype_txds, parse_ytyp, Archetype, ArchetypeTxd, MloDef, MloEntitySet, MloPortal, MloRoom, Ytyp};
+#[cfg(feature = "gtxd")]
 pub use gtxd::{parse_txd_relationships, TxdRelationship};
+#[cfg(feature = "meta")]
 pub use ymap::{parse_ymap_entities, parse_ymap_mlo_instances, MloInstance, YmapEntity};
+#[cfg(feature = "collision")]
 pub use ybn::{parse_ybn, Bound, BoundGeometry, BoundKind, BoundTransform, BoundTriangle, Triangle, Ybn};
+#[cfg(feature = "nav")]
 pub use ynv::{parse_ynv, serialize_ynv, cell_bounds, cell_file_name, cell_for_position, NavEdge, NavEdgeEnd, NavPoint,
               NavPoly, NavPortal, Ynv, ADJACENT_NONE};
 pub use texture_utils::decompress_texture;

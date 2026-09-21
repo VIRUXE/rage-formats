@@ -1501,6 +1501,7 @@ pub mod tests {
                 declaration: None,
                 data,
                 layout: VertexBufferLayout::Legacy,
+                g9_formats: [0; crate::vertex::G9_FORMAT_COUNT],
             }),
             index_buffer: Some(IndexBuffer {
                 indices_count: indices.len() as u32,
