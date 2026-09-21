@@ -9,16 +9,24 @@ keywords = ["gta", "rage", "ydr", "ytd", "rsc7"]
 categories = ["parsing", "game-development"]
 
 [features]
-default = ["image"]
+default = ["image", "gtxd", "meta", "collision", "nav"]
 # `to_rgba_image`, `fit_max_size` and `encode_image` in `texture_utils`;
 # without it the crate still decodes textures to raw RGBA bytes.
 image = ["dep:image"]
+# `gtxd.ymt` / `gtxd.meta` / `vehicles.meta` (RBF + XML). Pulls in `roxmltree`.
+gtxd = ["dep:roxmltree"]
+# `.ytyp` / `.ymap` / `.ymt` parsers. No extra crates.
+meta = []
+# `.ybn` collision bounds.
+collision = []
+# `.ynv` navmeshes.
+nav = []
 # Exposes `ydd::tests::minimal_ydr_sections` for downstream crates' tests.
 test-support = []
 
 [dependencies]
 anyhow = "1.0"
 flate2 = "1.0"
-roxmltree = "0.20"
+roxmltree = { version = "0.20", optional = true }
 texture2ddecoder = "0.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
