@@ -28,7 +28,7 @@ rage-formats = "0.2"
 | `.ymap` placements | yes | | `parse_ymap`, `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapHeader` (name, parent, flags, extents); `YmapEntity` per entity, with `to_world()`; `MloInstance` per interior, with its default entity sets |
 | `.ytyp` archetypes | yes | | `parse_ytyp` | every archetype's box and texture dictionary; each MLO's entities, named rooms, portals and entity sets |
 | `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo` |
-| `_manifest.ymf` | yes | | `parse_ymf` | `Manifest`: map/type dependencies, HD texture bindings, interior collision lists — from PSO, RBF, Meta or XML |
+| `_manifest.ymf` | yes | | `parse_ymf` | `Manifest`: map/type dependencies, HD texture bindings, interior collision lists â€” from PSO, RBF, Meta or XML |
 | any Meta file (`ytyp`, `ymap`, `ymt`) | yes | | `dump_meta`, `to_xml`, `to_json` | the whole file as a `MetaValue` tree from its own schema, with names from `NameTable` |
 | any PSO file (`ymf`, `pso`, `ymt`) | yes | | `dump_pso`, `to_xml`, `to_json` | the same tree from the big-endian container |
 | `gtxd.ymt` / `gtxd.meta` | yes | | `parse_txd_relationships` | texture dictionary parent chain |
@@ -62,9 +62,9 @@ Three families of file share that container but differ inside:
 - **Meta** (`ytyp`, `ymap`, ped `ymt`): a self-describing block table, each
   block tagged with a structure-name hash, with packed block:offset pointers
   between them. `ytyp.rs` walks the table once; `ymap.rs` and the MLO reader
-  reuse that. The header also carries the schema — every structure's size
-  and members — which `meta_schema.rs` reads to decode any block generically.
-- **PSO** (`_manifest.ymf`, `.pso`, many `.ymt`): not RSC7 at all — a
+  reuse that. The header also carries the schema â€” every structure's size
+  and members â€” which `meta_schema.rs` reads to decode any block generically.
+- **PSO** (`_manifest.ymf`, `.pso`, many `.ymt`): not RSC7 at all â€” a
   big-endian file of sections (`PSIN` data, `PMAP` block table, `PSCH`
   schema). `pso.rs` reads it and decodes it through the same generic walker.
 - **RBF** (`gtxd.ymt`, retail `_manifest.ymf`): a flat record stream with
@@ -233,7 +233,7 @@ vectors, hashes, strings, enums and flags. `MetaStruct::field("name")`
 looks a member up by name. Hashes with no known name print as
 `hash_XXXXXXXX`; the built-in list names every structure and member of the
 map formats, and `NameTable::add_list` takes more (one name per line), so
-content names — archetypes, texture dictionaries — can be supplied by
+content names â€” archetypes, texture dictionaries â€” can be supplied by
 whoever knows them. `from_xml` reads the XML layout back into a tree.
 
 ## Features
