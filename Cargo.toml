@@ -1,6 +1,6 @@
 [package]
 name = "rage-formats"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Parsers (and writers) for RAGE resource formats — RSC7 textures, drawables, fragments, meta/PSO data, collision and navmeshes — as found inside GTA V RPF archives"
 license = "Unlicense"
@@ -13,12 +13,15 @@ default = ["image"]
 # `to_rgba_image`, `fit_max_size` and `encode_image` in `texture_utils`;
 # without it the crate still decodes textures to raw RGBA bytes.
 image = ["dep:image"]
-# Exposes `ydd::tests::minimal_ydr_sections` for downstream crates' tests.
+# Exposes `ydd::tests::minimal_ydr_sections`, `ytyp::tests::minimal_mlo_ytyp`,
+# `pso::tests::sample_pso` and `meta_schema::tests::sample_meta` for
+# downstream crates' tests.
 test-support = []
 
 [dependencies]
 anyhow = "1.0"
 flate2 = "1.0"
 roxmltree = "0.20"
+json = "0.12"
 texture2ddecoder = "0.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }

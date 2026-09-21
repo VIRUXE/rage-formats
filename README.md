@@ -12,7 +12,7 @@ all three.
 
 ```toml
 [dependencies]
-rage-formats = "0.1"
+rage-formats = "0.2"
 ```
 
 ## What it reads and writes
@@ -25,9 +25,12 @@ rage-formats = "0.1"
 | `.yft` fragment | yes | | `parse_yft` | `Fragment`: main drawable, physics children with transforms, bone pose |
 | `.ybn` collision | yes | | `parse_ybn` | the `phBound` tree; `Ybn::triangles()` flattens it to world space |
 | `.ynv` navmesh | yes | yes | `parse_ynv`, `serialize_ynv` | `Ynv`: polygons with vertices, flags and edge adjacency, portals, points |
-| `.ymap` placements | yes | | `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapEntity` per entity, with `to_world()`; `MloInstance` per interior, with its default entity sets |
+| `.ymap` placements | yes | | `parse_ymap`, `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapHeader` (name, parent, flags, extents); `YmapEntity` per entity, with `to_world()`; `MloInstance` per interior, with its default entity sets |
 | `.ytyp` archetypes | yes | | `parse_ytyp` | every archetype's box and texture dictionary; each MLO's entities, named rooms, portals and entity sets |
 | `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo` |
+| `_manifest.ymf` | yes | | `parse_ymf` | `Manifest`: map/type dependencies, HD texture bindings, interior collision lists — from PSO, RBF, Meta or XML |
+| any Meta file (`ytyp`, `ymap`, `ymt`) | yes | | `dump_meta`, `to_xml`, `to_json` | the whole file as a `MetaValue` tree from its own schema, with names from `NameTable` |
+| any PSO file (`ymf`, `pso`, `ymt`) | yes | | `dump_pso`, `to_xml`, `to_json` | the same tree from the big-endian container |
 | `gtxd.ymt` / `gtxd.meta` | yes | | `parse_txd_relationships` | texture dictionary parent chain |
 | RSC7 container | yes | yes | `prepare_rsc7`, `build_rsc7`, `build_rsc7_paged` | sections in, a valid file out; `is_fxap` names an escrowed FiveM asset instead |
 
@@ -59,9 +62,13 @@ Three families of file share that container but differ inside:
 - **Meta** (`ytyp`, `ymap`, ped `ymt`): a self-describing block table, each
   block tagged with a structure-name hash, with packed block:offset pointers
   between them. `ytyp.rs` walks the table once; `ymap.rs` and the MLO reader
-  reuse that.
-- **RBF** (`gtxd.ymt`): a flat record stream with its own descriptor table;
-  `rbf.rs` reads it whole.
+  reuse that. The header also carries the schema — every structure's size
+  and members — which `meta_schema.rs` reads to decode any block generically.
+- **PSO** (`_manifest.ymf`, `.pso`, many `.ymt`): not RSC7 at all — a
+  big-endian file of sections (`PSIN` data, `PMAP` block table, `PSCH`
+  schema). `pso.rs` reads it and decodes it through the same generic walker.
+- **RBF** (`gtxd.ymt`, retail `_manifest.ymf`): a flat record stream with
+  its own descriptor table; `rbf.rs` reads it whole.
 
 Every byte offset was ported from CodeWalker.Core (`Bounds.cs`, `Nav.cs`,
 `YnvFile.cs`, `MetaTypes.cs`, `DrawableBase.cs` and friends) and checked
@@ -191,12 +198,50 @@ let boxes: std::collections::HashMap<u32, _> = ytyp.archetypes.iter().map(|a| (a
 Entities inside an MLO are relative to the MLO origin; apply the entity's
 own `to_world` and then the MLO instance's.
 
+### Map header and manifest
+
+```rust
+use rage_formats::{parse_ymap, parse_ymf};
+
+let ymap = parse_ymap(&bytes)?;
+println!("{:#010x} parent {:#010x} flags {:#x} {:?}", ymap.header.name_hash, ymap.header.parent_hash, ymap.header.flags, ymap.header.content_flag_names());
+println!("{} entities within {:?}..{:?}", ymap.entities.len(), ymap.header.entities_extents_min, ymap.header.entities_extents_max);
+
+let (format, manifest) = parse_ymf(&manifest_bytes)?;   // PSO, RBF, Meta or XML
+for dep in &manifest.imap_dependencies_2 {
+    println!("{} needs {:?}", dep.name, dep.ityp_deps);  // names print as text when the file had it, else hash_XXXXXXXX
+}
+```
+
+### Any Meta or PSO file, as XML or JSON
+
+Both containers carry their own schema, so any file decodes without a
+per-format reader:
+
+```rust
+use rage_formats::{dump_meta, dump_pso, is_pso, to_json, to_xml, NameTable};
+
+let dump = if is_pso(&bytes) { dump_pso(&bytes)? } else { dump_meta(&bytes)? };
+for w in &dump.warnings { eprintln!("{w}"); }      // anything left undecoded, never an error
+let names = NameTable::core();                     // built-in structure/member/enum names
+print!("{}", to_xml(&dump.root, &names));          // CodeWalker's XML layout, diffable against its export
+let json = to_json(&dump.root, &names).pretty(2);  // {"$type": "CMapData", "name": "map1", ...}
+```
+
+The tree is `MetaValue`: structures with hashed member names, arrays,
+vectors, hashes, strings, enums and flags. `MetaStruct::field("name")`
+looks a member up by name. Hashes with no known name print as
+`hash_XXXXXXXX`; the built-in list names every structure and member of the
+map formats, and `NameTable::add_list` takes more (one name per line), so
+content names — archetypes, texture dictionaries — can be supplied by
+whoever knows them. `from_xml` reads the XML layout back into a tree.
+
 ## Features
 
 | Feature | Default | Effect |
 |---|:-:|---|
 | `image` | on | `to_rgba_image`, `fit_max_size`, `encode_image`, `ImageFormat`, re-exports `image` |
-| `test-support` | off | exposes `ydd::tests::minimal_ydr_sections` and `ytyp::tests::minimal_mlo_ytyp` for downstream tests |
+| `test-support` | off | exposes `ydd::tests::minimal_ydr_sections`, `ytyp::tests::minimal_mlo_ytyp`, `pso::tests::sample_pso` and `meta_schema::tests::sample_meta` for downstream tests |
 
 ## Testing
 
@@ -209,10 +254,13 @@ RAGE_TEST_YNV='C:\...\navmesh[108][96].ynv' \
 RAGE_TEST_YBN='C:\...\stream\ybn\interior.ybn' \
 RAGE_TEST_YMAP='C:\...\stream\ymap\interior_milo_.ymap' \
 RAGE_TEST_MLO_DIR='C:\...\stream' \
+RAGE_TEST_YMF='C:\...\stream\_manifest.ymf' \
+RAGE_TEST_YTYP='C:\...\stream\props.ytyp' \
 cargo test --test real_files -- --ignored --nocapture
 ```
 
-They print what they found and assert the navmesh round trip.
+They print what they found, assert the navmesh round trip, and check that
+the generic dump of the map and type files names every structure member.
 
 ## License
 

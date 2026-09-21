@@ -129,3 +129,60 @@ fn ytyp_mlo_parses() {
     }
     assert!(!all.mlos.is_empty());
 }
+
+/// `RAGE_TEST_YMAP`: the header reads, the generic dump agrees with the
+/// fixed reader on the entity count, and the XML names every structure and
+/// member (only content hashes — archetypes, dictionaries — may be left).
+#[test]
+#[ignore]
+fn ymap_dumps_with_every_member_named() {
+    use rage_formats::{dump_meta, parse_ymap, to_xml, NameTable};
+    let Ok(path) = std::env::var("RAGE_TEST_YMAP") else { return };
+    let data = std::fs::read(&path).unwrap();
+    let ymap = parse_ymap(&data).unwrap();
+    println!("name {:#010x} parent {:#010x} flags {:#x} content {:?} streaming {:?}..{:?} entities {} (mlo {})",
+        ymap.header.name_hash, ymap.header.parent_hash, ymap.header.flags, ymap.header.content_flag_names(),
+        ymap.header.streaming_extents_min, ymap.header.streaming_extents_max, ymap.entities.len(), ymap.mlo_instances.len());
+    let dump = dump_meta(&data).unwrap();
+    assert!(dump.warnings.is_empty(), "{:?}", dump.warnings);
+    let root = dump.root.as_struct().unwrap();
+    assert_eq!(root.field("entities").unwrap().items().len(), ymap.entities.len());
+    assert_eq!(root.field("name").and_then(|v| v.as_hash()), Some(ymap.header.name_hash));
+    let xml = to_xml(&dump.root, &NameTable::core());
+    let unnamed_tags: Vec<&str> = xml.lines().filter_map(|l| l.trim().strip_prefix("<hash_")).map(|l| l.split(['>', ' ', '/']).next().unwrap_or("")).collect();
+    assert!(unnamed_tags.is_empty(), "members without names: {unnamed_tags:?}");
+}
+
+/// `RAGE_TEST_YMF`: a manifest in any container lists its dependencies.
+#[test]
+#[ignore]
+fn manifest_parses() {
+    use rage_formats::parse_ymf;
+    let Ok(path) = std::env::var("RAGE_TEST_YMF") else { return };
+    let data = std::fs::read(&path).unwrap();
+    let (format, m) = parse_ymf(&data).unwrap();
+    println!("{format:?}: {} groups, {} imap deps, {} imap deps 2, {} ityp deps 2, {} hd txd bindings, {} interiors",
+        m.map_data_groups.len(), m.imap_dependencies.len(), m.imap_dependencies_2.len(), m.ityp_dependencies_2.len(), m.hd_txd_bindings.len(), m.interiors.len());
+    for d in &m.imap_dependencies_2 {
+        println!("  {} -> {}", d.name, d.ityp_deps.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "));
+    }
+    assert!(!m.is_empty(), "manifest lists nothing");
+}
+
+/// `RAGE_TEST_YTYP`: the generic dump of a type file names every member.
+#[test]
+#[ignore]
+fn ytyp_dumps_with_every_member_named() {
+    use rage_formats::{dump_meta, parse_ytyp, to_xml, NameTable};
+    let Ok(path) = std::env::var("RAGE_TEST_YTYP") else { return };
+    let data = std::fs::read(&path).unwrap();
+    let ytyp = parse_ytyp(&data).unwrap();
+    let dump = dump_meta(&data).unwrap();
+    assert!(dump.warnings.is_empty(), "{:?}", dump.warnings);
+    let root = dump.root.as_struct().unwrap();
+    assert_eq!(root.field("archetypes").unwrap().items().len(), ytyp.archetypes.len());
+    let xml = to_xml(&dump.root, &NameTable::core());
+    let unnamed_tags: Vec<&str> = xml.lines().filter_map(|l| l.trim().strip_prefix("<hash_")).map(|l| l.split(['>', ' ', '/']).next().unwrap_or("")).collect();
+    assert!(unnamed_tags.is_empty(), "members without names: {unnamed_tags:?}");
+    println!("{} archetypes, {} MLOs, {} XML lines", ytyp.archetypes.len(), ytyp.mlos.len(), xml.lines().count());
+}

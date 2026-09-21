@@ -69,6 +69,76 @@ pub struct MloInstance {
     pub num_exit_portals: u32,
 }
 
+/// The `CMapData` fields that describe the map itself: its name, the parent
+/// map it is a LOD child of, its flags and the boxes it streams within.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct YmapHeader {
+    /// Lowercase JOAAT of the map's name (CodeWalker shows it as the ymap's
+    /// internal name).
+    pub name_hash: u32,
+    /// 0 when the map has no parent.
+    pub parent_hash: u32,
+    pub flags: u32,
+    pub content_flags: u32,
+    pub streaming_extents_min: Vec3,
+    pub streaming_extents_max: Vec3,
+    pub entities_extents_min: Vec3,
+    pub entities_extents_max: Vec3,
+}
+
+impl YmapHeader {
+    /// `flags` bit 0: the map is a script-requested one (`SCRIPTED`).
+    pub const FLAG_SCRIPTED: u32 = 1;
+    /// `flags` bit 1: the map's entities are LOD children (`LOD`).
+    pub const FLAG_LOD: u32 = 2;
+
+    /// The `contentFlags` bits by name, in bit order.
+    pub const CONTENT_FLAG_NAMES: [&'static str; 11] = [
+        "HD", "LOD", "SLOD2+", "Interior", "SLOD", "Occlusion", "Physics", "LOD lights", "Distant lights", "Critical", "Grass",
+    ];
+
+    /// The names of the set `contentFlags` bits.
+    pub fn content_flag_names(&self) -> Vec<&'static str> {
+        Self::CONTENT_FLAG_NAMES.iter().enumerate().filter(|(i, _)| self.content_flags & (1 << i) != 0).map(|(_, n)| *n).collect()
+    }
+}
+
+/// Everything this module reads from a `.ymap`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ymap {
+    pub header: YmapHeader,
+    pub entities: Vec<YmapEntity>,
+    pub mlo_instances: Vec<MloInstance>,
+}
+
+/// Reads the `CMapData` header fields (name @8, parent @12, flags @16,
+/// contentFlags @20, the two extents boxes @32..96).
+pub fn parse_ymap_header(data: &[u8]) -> Result<YmapHeader> {
+    let (system, graphics) = prepare_rsc7(data)?;
+    let reader = ResReader { system: &system, graphics: &graphics };
+    let blocks = read_meta_blocks(&reader).context("ymap")?;
+    let map = blocks.iter().find(|b| b.name_hash == HASH_CMAPDATA).context("ymap: CMapData block not found")?;
+    let d = &map.data;
+    if d.len() < 96 {
+        bail!("ymap: CMapData block too small");
+    }
+    Ok(YmapHeader {
+        name_hash: u32_le(d, 8),
+        parent_hash: u32_le(d, 12),
+        flags: u32_le(d, 16),
+        content_flags: u32_le(d, 20),
+        streaming_extents_min: vec3_le(d, 32),
+        streaming_extents_max: vec3_le(d, 48),
+        entities_extents_min: vec3_le(d, 64),
+        entities_extents_max: vec3_le(d, 80),
+    })
+}
+
+/// Header, entities and interior placements in one go.
+pub fn parse_ymap(data: &[u8]) -> Result<Ymap> {
+    Ok(Ymap { header: parse_ymap_header(data)?, entities: parse_ymap_entities(data)?, mlo_instances: parse_ymap_mlo_instances(data)? })
+}
+
 /// Walks a `.ymap`'s Meta blocks and reads `CMapData.entities` as a list of
 /// packed pointers, which the two entity readers below then decode.
 fn map_entity_pointers(data: &[u8]) -> Result<(Vec<MetaBlock>, Vec<u64>)> {
@@ -243,6 +313,28 @@ mod tests {
         put_u32(&mut sys, u + 4, rage_joaat("set_hall"));
 
         sys
+    }
+
+    #[test]
+    fn parses_the_map_header() {
+        let mut sys = mlo_ymap_system(HASH_CMLOINSTANCEDEF);
+        let m = YMAP_BLOCKS[0].1;
+        put_u32(&mut sys, m + 8, rage_joaat("map1"));
+        put_u32(&mut sys, m + 16, 1);
+        put_u32(&mut sys, m + 20, 0b1001);
+        put_vec3(&mut sys, m + 32, Vec3::new(-10.0, -20.0, -30.0));
+        put_vec3(&mut sys, m + 48, Vec3::new(10.0, 20.0, 30.0));
+        put_vec3(&mut sys, m + 64, Vec3::new(-1.0, -2.0, -3.0));
+        put_vec3(&mut sys, m + 80, Vec3::new(1.0, 2.0, 3.0));
+        let ymap = parse_ymap(&build_rsc7(2, &sys, &[])).expect("should parse");
+        assert_eq!(ymap.header.name_hash, rage_joaat("map1"));
+        assert_eq!(ymap.header.parent_hash, 0);
+        assert_eq!(ymap.header.flags, YmapHeader::FLAG_SCRIPTED);
+        assert_eq!(ymap.header.content_flag_names(), ["HD", "Interior"]);
+        assert_eq!(ymap.header.streaming_extents_max, Vec3::new(10.0, 20.0, 30.0));
+        assert_eq!(ymap.header.entities_extents_min, Vec3::new(-1.0, -2.0, -3.0));
+        assert_eq!(ymap.entities.len(), 1);
+        assert_eq!(ymap.mlo_instances.len(), 1);
     }
 
     #[test]

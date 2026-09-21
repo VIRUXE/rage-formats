@@ -18,6 +18,13 @@ pub mod gtxd;
 pub mod ybn;
 pub mod ymap;
 pub mod ynv;
+pub mod value;
+pub mod pso;
+pub mod meta_schema;
+pub mod names;
+pub mod xml;
+pub mod json;
+pub mod ymf;
 pub mod texture_utils;
 mod rbf;
 
@@ -36,10 +43,17 @@ pub use yft::{parse_yft, wheel_slot, Fragment, FragmentChild, FragmentPart, Whee
 pub use ymt::{parse_ymt, PedVariationInfo};
 pub use ytyp::{parse_archetype_txds, parse_ytyp, Archetype, ArchetypeTxd, MloDef, MloEntitySet, MloPortal, MloRoom, Ytyp};
 pub use gtxd::{parse_txd_relationships, TxdRelationship};
-pub use ymap::{parse_ymap_entities, parse_ymap_mlo_instances, MloInstance, YmapEntity};
+pub use ymap::{parse_ymap, parse_ymap_entities, parse_ymap_header, parse_ymap_mlo_instances, MloInstance, Ymap, YmapEntity, YmapHeader};
 pub use ybn::{parse_ybn, Bound, BoundGeometry, BoundKind, BoundTransform, BoundTriangle, Triangle, Ybn};
 pub use ynv::{parse_ynv, serialize_ynv, cell_bounds, cell_file_name, cell_for_position, NavEdge, NavEdgeEnd, NavPoint,
               NavPoly, NavPortal, Ynv, ADJACENT_NONE};
+pub use value::{MetaArray, MetaDump, MetaStruct, MetaValue};
+pub use pso::{dump_pso, is_pso, parse_pso, PsoFile, PSO_MAGIC};
+pub use meta_schema::{dump_meta, parse_meta, MetaFile};
+pub use names::NameTable;
+pub use xml::{from_xml, to_xml};
+pub use json::to_json;
+pub use ymf::{dump_ymf, parse_ymf, Dependencies, HashName, HdTxdBinding, ImapDependency, InteriorBounds, Manifest, ManifestFormat, MapDataGroup};
 pub use texture_utils::decompress_texture;
 #[cfg(feature = "image")]
 pub use texture_utils::{to_rgba_image, fit_max_size, encode_image, ImageFormat};
