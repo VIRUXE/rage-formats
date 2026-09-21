@@ -14,7 +14,8 @@ default = ["image"]
 # without it the crate still decodes textures to raw RGBA bytes.
 image = ["dep:image"]
 # Exposes `ydd::tests::minimal_ydr_sections`, `ytyp::tests::minimal_mlo_ytyp`,
-# `pso::tests::sample_pso` and `meta_schema::tests::sample_meta` for
+# `ymap::tests::sample_exterior_ymap`, `pso::tests::sample_pso` and
+# `meta_schema::tests::sample_meta` for
 # downstream crates' tests.
 test-support = []
 

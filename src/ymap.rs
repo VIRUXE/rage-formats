@@ -220,11 +220,86 @@ pub(crate) fn read_entity(e: &[u8], is_mlo_instance: bool) -> YmapEntity {
     }
 }
 
-#[cfg(test)]
-mod tests {
+/// Byte-built `.ymap` fixtures. The exterior one is shared with downstream
+/// crates' tests through the `test-support` feature.
+#[cfg(any(test, feature = "test-support"))]
+pub mod tests {
     use super::*;
     use crate::hash::rage_joaat;
     use crate::resource::{build_rsc7, SYSTEM_BASE};
+
+    /// A `.ymap` called `name` placing plain (non-MLO) entities: one
+    /// `CEntityDef` per `(archetype name, position, yaw degrees)`, flags 32
+    /// (static), lod distance 100. The map's extents are the entities'.
+    pub fn sample_exterior_ymap(name: &str, entities: &[(&str, Vec3, f32)]) -> Vec<u8> {
+        let count = entities.len();
+        let entity_bytes = count * 128;
+        let ptr_bytes = (count * 8).max(8);
+        // Blocks: CMapData at 0x0B0 (368), pointer array, then the entities.
+        let ptr_off = 0x220;
+        let ent_off = (ptr_off + ptr_bytes + 15) & !15;
+        let mut sys = vec![0u8; (ent_off + entity_bytes + 0xFF) & !0xFF];
+
+        let blocks: [(u32, usize, usize); 3] = [(HASH_CMAPDATA, 0x0B0, 368), (0, ptr_off, ptr_bytes), (HASH_CENTITYDEF, ent_off, entity_bytes.max(16))];
+        put_u32(&mut sys, 0x1C, 1); // root block
+        put_u64(&mut sys, 0x30, SYSTEM_BASE + 0x70);
+        put_u16(&mut sys, 0x4C, blocks.len() as u16);
+        for (i, &(hash, off, len)) in blocks.iter().enumerate() {
+            let h = 0x70 + i * 16;
+            put_u32(&mut sys, h, hash);
+            put_u32(&mut sys, h + 4, len as u32);
+            put_u64(&mut sys, h + 8, SYSTEM_BASE + off as u64);
+        }
+
+        let m = blocks[0].1;
+        put_u32(&mut sys, m + 8, rage_joaat(name));
+        put_u32(&mut sys, m + 20, 1); // contentFlags: HD
+        let (mut lo, mut hi) = (Vec3::new(f32::MAX, f32::MAX, f32::MAX), Vec3::new(f32::MIN, f32::MIN, f32::MIN));
+        for (_, p, _) in entities {
+            lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+        put_vec3(&mut sys, m + 32, lo);
+        put_vec3(&mut sys, m + 48, hi);
+        put_vec3(&mut sys, m + 64, lo);
+        put_vec3(&mut sys, m + 80, hi);
+        if count > 0 {
+            put_array(&mut sys, m + 96, 1, count as u16);
+        }
+        for (n, (archetype, position, yaw)) in entities.iter().enumerate() {
+            put_u64(&mut sys, ptr_off + n * 8, 3 | ((n * 128) as u64) << 12);
+            let e = ent_off + n * 128;
+            put_u32(&mut sys, e + 8, rage_joaat(&archetype.to_lowercase()));
+            put_u32(&mut sys, e + 12, 32);
+            put_vec3(&mut sys, e + 32, *position);
+            // Stored as the inverse: a heading of +yaw is stored as -yaw.
+            let half = -yaw.to_radians() / 2.0;
+            put_f32(&mut sys, e + 56, half.sin());
+            put_f32(&mut sys, e + 60, half.cos());
+            put_f32(&mut sys, e + 64, 1.0);
+            put_f32(&mut sys, e + 68, 1.0);
+            put_u32(&mut sys, e + 72, -1i32 as u32);
+            put_f32(&mut sys, e + 76, 100.0);
+        }
+        build_rsc7(2, &sys, &[])
+    }
+
+    #[test]
+    fn the_exterior_fixture_round_trips() {
+        let data = sample_exterior_ymap("paleto_props", &[("prop_a", Vec3::new(10.0, 20.0, 30.0), 90.0), ("prop_b", Vec3::new(-5.0, 2.0, 1.0), 0.0)]);
+        let ymap = parse_ymap(&data).unwrap();
+        assert_eq!(ymap.header.name_hash, rage_joaat("paleto_props"));
+        assert_eq!(ymap.header.entities_extents_min, Vec3::new(-5.0, 2.0, 1.0));
+        assert_eq!(ymap.entities.len(), 2);
+        assert_eq!(ymap.entities[0].archetype_hash, rage_joaat("prop_a"));
+        assert_eq!(ymap.entities[1].position, Vec3::new(-5.0, 2.0, 1.0));
+        assert!(ymap.mlo_instances.is_empty());
+        // +90° heading: local +x becomes world +y.
+        let p = ymap.entities[0].to_world(Vec3::new(1.0, 0.0, 0.0));
+        assert!((p - Vec3::new(10.0, 21.0, 30.0)).length() < 1e-4, "{p:?}");
+        assert_eq!(parse_ymap(&sample_exterior_ymap("empty", &[])).unwrap().entities.len(), 0);
+    }
+
 
     #[test]
     fn rotation_by_quarter_turn_about_z() {

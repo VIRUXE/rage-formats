@@ -53,7 +53,7 @@ pub use meta_schema::{dump_meta, parse_meta, MetaFile};
 pub use names::NameTable;
 pub use xml::{from_xml, to_xml};
 pub use json::to_json;
-pub use ymf::{dump_ymf, parse_ymf, Dependencies, HashName, HdTxdBinding, ImapDependency, InteriorBounds, Manifest, ManifestFormat, MapDataGroup};
+pub use ymf::{dump_metadata, dump_ymf, parse_ymf, Dependencies, HashName, HdTxdBinding, ImapDependency, InteriorBounds, Manifest, ManifestFormat, MapDataGroup, MetaContainer};
 pub use texture_utils::decompress_texture;
 #[cfg(feature = "image")]
 pub use texture_utils::{to_rgba_image, fit_max_size, encode_image, ImageFormat};

@@ -100,16 +100,30 @@ pub struct Manifest {
     pub interiors: Vec<InteriorBounds>,
 }
 
-/// Which container a manifest came in.
+/// Which container a metadata file came in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManifestFormat {
+pub enum MetaContainer {
     Pso,
     Rbf,
     Meta,
     Xml,
 }
 
-impl ManifestFormat {
+/// The container of a manifest: any of the four.
+pub type ManifestFormat = MetaContainer;
+
+impl std::fmt::Display for MetaContainer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Pso => "PSO",
+            Self::Rbf => "RBF",
+            Self::Meta => "RSC7 Meta",
+            Self::Xml => "XML",
+        })
+    }
+}
+
+impl MetaContainer {
     /// Looks at the first bytes only.
     pub fn detect(data: &[u8]) -> Option<Self> {
         if is_pso(data) {
@@ -126,13 +140,14 @@ impl ManifestFormat {
     }
 }
 
-/// Decodes a manifest in any of its containers into the generic tree.
-pub fn dump_ymf(data: &[u8]) -> Result<(ManifestFormat, MetaDump)> {
+/// Decodes any metadata file — PSO, RBF, RSC7 Meta or XML, told apart by
+/// its first bytes — into the generic tree.
+pub fn dump_metadata(data: &[u8]) -> Result<(MetaContainer, MetaDump)> {
     if is_fxap(data) {
-        bail!("manifest is an escrowed (FXAP) file and cannot be read");
+        bail!("an escrowed (FXAP) file cannot be read");
     }
-    let Some(format) = ManifestFormat::detect(data) else {
-        bail!("not a manifest: neither PSO, RBF, RSC7 Meta nor XML");
+    let Some(format) = MetaContainer::detect(data) else {
+        bail!("not metadata: neither PSO, RBF, RSC7 Meta nor XML");
     };
     let dump = match format {
         ManifestFormat::Pso => dump_pso(data)?,
@@ -141,6 +156,11 @@ pub fn dump_ymf(data: &[u8]) -> Result<(ManifestFormat, MetaDump)> {
         ManifestFormat::Xml => MetaDump { root: from_xml(std::str::from_utf8(data).context("manifest XML is not UTF-8")?)?, warnings: Vec::new() },
     };
     Ok((format, dump))
+}
+
+/// [`dump_metadata`] for a manifest.
+pub fn dump_ymf(data: &[u8]) -> Result<(ManifestFormat, MetaDump)> {
+    dump_metadata(data)
 }
 
 /// Parses a manifest in any of its containers.
@@ -317,5 +337,6 @@ mod tests {
         assert_eq!(ManifestFormat::detect(b"RSC7\x02\0\0\0"), Some(ManifestFormat::Meta));
         assert_eq!(ManifestFormat::detect(b"\xEF\xBB\xBF  <?xml"), Some(ManifestFormat::Xml));
         assert_eq!(ManifestFormat::detect(b"FXAP"), None);
+        assert_eq!(MetaContainer::Pso.to_string(), "PSO");
     }
 }

@@ -241,7 +241,39 @@ pub struct Archetype {
     pub lod_dist: f32,
     /// `textureDictionary` hash, 0 when none.
     pub texture_dict_hash: u32,
+    /// `drawableDictionary` hash: the `.ydd` holding the model when
+    /// `asset_type` says so; 0 otherwise.
+    pub drawable_dictionary_hash: u32,
+    /// `assetName` hash: the model's own name (its `.ydr`/`.yft` stem, or
+    /// its member name inside the drawable dictionary).
+    pub asset_name_hash: u32,
+    /// `assetType` as stored: see the `ASSET_TYPE_*` constants.
+    pub asset_type: u32,
     pub is_mlo: bool,
+}
+
+impl Archetype {
+    pub const ASSET_TYPE_UNINITIALIZED: u32 = 0;
+    pub const ASSET_TYPE_FRAGMENT: u32 = 1;
+    pub const ASSET_TYPE_DRAWABLE: u32 = 2;
+    pub const ASSET_TYPE_DRAWABLEDICTIONARY: u32 = 3;
+    pub const ASSET_TYPE_ASSETLESS: u32 = 4;
+
+    /// The model lives inside a `.ydd` named by `drawable_dictionary_hash`.
+    pub fn in_drawable_dictionary(&self) -> bool {
+        self.asset_type == Self::ASSET_TYPE_DRAWABLEDICTIONARY && self.drawable_dictionary_hash != 0
+    }
+
+    /// The model is a fragment (`.yft`).
+    pub fn is_fragment(&self) -> bool {
+        self.asset_type == Self::ASSET_TYPE_FRAGMENT
+    }
+
+    /// The hash of the file (or dictionary member) that holds the model:
+    /// `assetName` when set, else the archetype's own name.
+    pub fn model_hash(&self) -> u32 {
+        if self.asset_name_hash != 0 { self.asset_name_hash } else { self.name_hash }
+    }
 }
 
 /// A room of an MLO, in MLO-local space.
@@ -351,6 +383,9 @@ pub fn parse_ytyp(data: &[u8]) -> Result<Ytyp> {
             bb_max: vec3_le(base, 48),
             lod_dist: f32_le(base, 8),
             texture_dict_hash: u32_le(base, 92),
+            drawable_dictionary_hash: u32_le(base, 100),
+            asset_type: u32_le(base, 108),
+            asset_name_hash: u32_le(base, 112),
             is_mlo,
         });
         if !is_mlo { continue; }
