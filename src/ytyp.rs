@@ -59,6 +59,8 @@ pub struct ArchetypeTxd {
 pub(crate) struct MetaBlock {
     pub(crate) name_hash: u32,
     pub(crate) data: Vec<u8>,
+    /// Where the block starts in the system section, when it lives there.
+    pub(crate) system_offset: Option<usize>,
 }
 
 /// Decodes a packed Meta-format pointer (distinct from the resource VAs
@@ -100,7 +102,8 @@ pub(crate) fn read_meta_blocks(reader: &ResReader<'_>) -> Result<Vec<MetaBlock>>
         // A block whose data pointer doesn't resolve is skipped rather than
         // failing the whole file — other blocks may still be usable.
         let data = reader.resolve(data_ptr, length).map(|b| b.to_vec()).unwrap_or_default();
-        blocks.push(MetaBlock { name_hash, data });
+        let system_offset = (data_ptr >= SYSTEM_BASE && data_ptr < crate::resource::GRAPHICS_BASE).then(|| (data_ptr - SYSTEM_BASE) as usize);
+        blocks.push(MetaBlock { name_hash, data, system_offset });
     }
 
     Ok(blocks)

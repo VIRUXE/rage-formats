@@ -207,7 +207,7 @@ pub(crate) fn parse_meta_from_reader(reader: &ResReader<'_>) -> Result<MetaFile>
 
 /// Decodes the whole file from its root block.
 pub fn walk(file: &MetaFile) -> MetaDump {
-    let mut w = Walker { file, warnings: Vec::new(), depth: 0 };
+    let mut w = Walker { file, warnings: Vec::new(), depth: 0, sites: Vec::new() };
     let root = match file.blocks.get(file.root_block) {
         Some(block) => w.read_struct(block.name_hash, file.root_block, 0),
         None => {
@@ -223,12 +223,62 @@ pub fn dump_meta(data: &[u8]) -> Result<MetaDump> {
     Ok(walk(&parse_meta(data)?))
 }
 
+/// Where a hash-typed value sits in a file: the byte offset (into the
+/// inflated system section for Meta, into the file for PSO) and what is
+/// there now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HashSite {
+    pub offset: usize,
+    pub value: u32,
+}
+
+/// Every hash-typed member and array element the schema describes, as
+/// offsets into the inflated system section. Padding, strings and numbers
+/// are never listed, so a rename touches only what is a name.
+pub fn hash_sites(file: &MetaFile) -> Vec<HashSite> {
+    let mut w = Walker { file, warnings: Vec::new(), depth: 0, sites: Vec::new() };
+    if let Some(block) = file.blocks.get(file.root_block) {
+        w.read_struct(block.name_hash, file.root_block, 0);
+    }
+    let mut sites: Vec<HashSite> = w
+        .sites
+        .into_iter()
+        .filter_map(|(block, off, value)| {
+            let base = file.blocks.get(block)?.system_offset?;
+            Some(HashSite { offset: base + off, value })
+        })
+        .collect();
+    sites.sort_by_key(|s| s.offset);
+    sites.dedup();
+    sites
+}
+
+/// Rewrites every hash field equal to one of `old` to `new` and returns
+/// the RSC7 file again (same version, sections re-paged) with the number
+/// of fields changed. The file's bytes are otherwise untouched.
+pub fn replace_hashes(data: &[u8], old: &[u32], new: u32) -> Result<(Vec<u8>, usize)> {
+    let file = parse_meta(data)?;
+    let sites = hash_sites(&file);
+    let (mut system, graphics) = prepare_rsc7(data)?;
+    let version = crate::resource::resource_version_from_flags(u32_le(data, 8), u32_le(data, 12));
+    let mut changed = 0;
+    for site in sites {
+        if old.contains(&site.value) && system.len() >= site.offset + 4 {
+            system[site.offset..site.offset + 4].copy_from_slice(&new.to_le_bytes());
+            changed += 1;
+        }
+    }
+    Ok((crate::resource::build_rsc7(version, &system, &graphics), changed))
+}
+
 const MAX_DEPTH: usize = 64;
 
 struct Walker<'a> {
     file: &'a MetaFile,
     warnings: Vec<String>,
     depth: usize,
+    /// `(block, offset, value)` of every hash read, for [`hash_sites`].
+    sites: Vec<(usize, usize, u32)>,
 }
 
 impl Walker<'_> {
@@ -295,7 +345,11 @@ impl Walker<'_> {
                 let b = need!(16);
                 MetaValue::Vec4(Vec4::new(f32_le(b, 0), f32_le(b, 4), f32_le(b, 8), f32_le(b, 12)))
             }
-            MetaType::Hash => MetaValue::Hash(u32_le(need!(4), 0)),
+            MetaType::Hash => {
+                let value = u32_le(need!(4), 0);
+                self.sites.push((block, abs, value));
+                MetaValue::Hash(value)
+            }
             MetaType::ByteEnum => {
                 let value = i32::from(need!(1)[0]);
                 MetaValue::Enum { enum_hash: entry.ref_key, value, name: self.enum_name(entry.ref_key, value) }
@@ -441,7 +495,11 @@ impl Walker<'_> {
                 MetaType::SignedInt => MetaValue::I32(u32_le(b, 0) as i32),
                 MetaType::UnsignedInt => MetaValue::U32(u32_le(b, 0)),
                 MetaType::Float => MetaValue::F32(f32_le(b, 0)),
-                MetaType::Hash => MetaValue::Hash(u32_le(b, 0)),
+                MetaType::Hash => {
+                    let value = u32_le(b, 0);
+                    self.sites.push((bi, bo, value));
+                    MetaValue::Hash(value)
+                }
                 MetaType::Vec3 => MetaValue::Vec3(Vec3::new(f32_le(b, 0), f32_le(b, 4), f32_le(b, 8))),
                 MetaType::Vec4 => MetaValue::Vec4(Vec4::new(f32_le(b, 0), f32_le(b, 4), f32_le(b, 8), f32_le(b, 12))),
                 MetaType::ByteEnum => {
@@ -654,6 +712,27 @@ pub mod tests {
         assert_eq!(file.structs[&rage_joaat(ROOT)].entries.len(), 7);
         assert_eq!(file.structs[&rage_joaat(ENTITY)].size, 0x20);
         assert_eq!(file.enums[&rage_joaat(FLAGS_ENUM)].entries, vec![(rage_joaat("FLAG_LOW"), 0), (rage_joaat("FLAG_HIGH"), 3)]);
+    }
+
+    #[test]
+    fn hashes_are_located_and_renamed_in_place() {
+        let data = sample_meta();
+        let file = parse_meta(&data).unwrap();
+        let sites = hash_sites(&file);
+        assert!(sites.iter().any(|s| s.value == rage_joaat("map1")), "{sites:?}");
+        assert!(sites.iter().any(|s| s.value == rage_joaat("prop_b")), "{sites:?}");
+        let (system, _) = prepare_rsc7(&data).unwrap();
+        for s in &sites {
+            assert_eq!(u32_le(&system, s.offset), s.value, "site {s:?} does not point at its value");
+        }
+        let (renamed, changed) = replace_hashes(&data, &[rage_joaat("map1")], rage_joaat("casas_praia_extras")).unwrap();
+        assert_eq!(changed, 1);
+        let dump = dump_meta(&renamed).unwrap();
+        assert!(dump.warnings.is_empty(), "{:?}", dump.warnings);
+        let root = dump.root.as_struct().unwrap();
+        assert_eq!(root.field("name"), Some(&MetaValue::Hash(rage_joaat("casas_praia_extras"))));
+        assert_eq!(root.field("label"), Some(&MetaValue::Str("hello".into())));
+        assert_eq!(replace_hashes(&data, &[0xDEAD_BEEF], 1).unwrap().1, 0);
     }
 
     #[test]

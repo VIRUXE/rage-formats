@@ -21,6 +21,8 @@
 
 use std::collections::HashMap;
 
+pub use crate::meta_schema::HashSite;
+
 use anyhow::{bail, Context, Result};
 
 use crate::math::{Vec2, Vec3, Vec4};
@@ -294,7 +296,7 @@ impl PsoFile {
 
 /// Decodes the whole file into a value tree, starting at the root block.
 pub fn walk(file: &PsoFile) -> MetaDump {
-    let mut w = Walker { file, warnings: Vec::new(), depth: 0 };
+    let mut w = Walker { file, warnings: Vec::new(), depth: 0, sites: Vec::new() };
     let root = match file.block(file.root_id) {
         Some(block) => w.read_struct(block.name_hash, block.offset as usize),
         None => {
@@ -308,6 +310,35 @@ pub fn walk(file: &PsoFile) -> MetaDump {
 /// Parses and decodes in one go.
 pub fn dump_pso(data: &[u8]) -> Result<MetaDump> {
     Ok(walk(&parse_pso(data)?))
+}
+
+/// Every hash-typed member and array element, as absolute file offsets
+/// (the data section is first in the file, so its offsets are the file's).
+pub fn hash_sites(file: &PsoFile) -> Vec<HashSite> {
+    let mut w = Walker { file, warnings: Vec::new(), depth: 0, sites: Vec::new() };
+    if let Some(block) = file.block(file.root_id) {
+        w.read_struct(block.name_hash, block.offset as usize);
+    }
+    let mut sites: Vec<HashSite> = w.sites.into_iter().map(|(offset, value)| HashSite { offset, value }).collect();
+    sites.sort_by_key(|s| s.offset);
+    sites.dedup();
+    sites
+}
+
+/// Rewrites every hash field equal to one of `old` to `new`, in place (a
+/// PSO file's layout does not change), and returns the file with the
+/// number of fields changed.
+pub fn replace_hashes(data: &[u8], old: &[u32], new: u32) -> Result<(Vec<u8>, usize)> {
+    let file = parse_pso(data)?;
+    let mut out = data.to_vec();
+    let mut changed = 0;
+    for site in hash_sites(&file) {
+        if old.contains(&site.value) && out.len() >= site.offset + 4 {
+            out[site.offset..site.offset + 4].copy_from_slice(&new.to_be_bytes());
+            changed += 1;
+        }
+    }
+    Ok((out, changed))
 }
 
 /// A packed pointer: 1-based block id in the low 12 bits, byte offset in
@@ -326,6 +357,8 @@ struct Walker<'a> {
     file: &'a PsoFile,
     warnings: Vec<String>,
     depth: usize,
+    /// `(absolute offset, value)` of every hash read, for [`hash_sites`].
+    sites: Vec<(usize, u32)>,
 }
 
 const MAX_DEPTH: usize = 64;
@@ -493,7 +526,11 @@ impl Walker<'_> {
                 }
             }
             7 | 8 => match self.bytes(abs, 4) {
-                Some(b) => MetaValue::Hash(u32_be(b, 0)),
+                Some(b) => {
+                    let value = u32_be(b, 0);
+                    self.sites.push((abs, value));
+                    MetaValue::Hash(value)
+                }
                 None => self.warn(format!("hash at {abs} out of bounds")),
             },
             other => self.warn(format!("string subtype {other} at {abs}")),
@@ -599,7 +636,18 @@ impl Walker<'_> {
                 }
             },
             PsoType::String => match elem.subtype {
-                7 | 8 => fixed!(4, |b| MetaValue::Hash(u32_be(b, 0))),
+                7 | 8 => {
+                    for n in 0..count {
+                        let at = start + n * 4;
+                        let Some(b) = self.bytes(at, 4) else {
+                            self.warn(format!("hash array element {n} out of bounds"));
+                            break;
+                        };
+                        let value = u32_be(b, 0);
+                        self.sites.push((at, value));
+                        items.push(MetaValue::Hash(value));
+                    }
+                }
                 2 => {
                     for n in 0..count {
                         let v = self.read_string(&PsoEntry { subtype: 2, ..elem.clone() }, start + n * 8);
@@ -838,6 +886,23 @@ pub mod tests {
             assert_eq!(file.structs.len(), 2);
             assert_eq!(file.enums.len(), 2);
         }
+    }
+
+    #[test]
+    fn hashes_are_located_and_renamed_in_place() {
+        let data = sample_pso(false);
+        let file = parse_pso(&data).unwrap();
+        let sites = hash_sites(&file);
+        assert!(sites.iter().any(|s| s.value == rage_joaat("map1")), "{sites:?}");
+        for s in &sites {
+            assert_eq!(u32_be(&data, s.offset), s.value, "site {s:?} does not point at its value");
+        }
+        let (renamed, changed) = replace_hashes(&data, &[rage_joaat("map1")], rage_joaat("skatepark")).unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(renamed.len(), data.len());
+        let dump = dump_pso(&renamed).unwrap();
+        assert!(dump.warnings.is_empty(), "{:?}", dump.warnings);
+        assert_eq!(dump.root.as_struct().unwrap().field("name"), Some(&MetaValue::Hash(rage_joaat("skatepark"))));
     }
 
     #[test]

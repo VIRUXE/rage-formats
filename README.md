@@ -239,6 +239,13 @@ such a table), and `NameTable::add_list` takes more (one name per line), so
 content names — archetypes, texture dictionaries — can be supplied by
 whoever knows them. `from_xml` reads the XML layout back into a tree.
 
+The same schema walk knows where every hash-typed field sits, so a name can
+be changed without rewriting the file: `meta_schema::replace_hashes` and
+`pso::replace_hashes` rewrite every hash field equal to one of the old
+values (a Meta file is re-paged into a fresh RSC7 container, a PSO file
+is patched in place) and report how many they changed. `hash_sites` lists
+the offsets themselves.
+
 ## Features
 
 | Feature | Default | Effect |

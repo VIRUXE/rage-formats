@@ -49,7 +49,7 @@ pub use ynv::{parse_ynv, serialize_ynv, cell_bounds, cell_file_name, cell_for_po
               NavPoly, NavPortal, Ynv, ADJACENT_NONE};
 pub use value::{MetaArray, MetaDump, MetaStruct, MetaValue};
 pub use pso::{dump_pso, is_pso, parse_pso, PsoFile, PSO_MAGIC};
-pub use meta_schema::{dump_meta, parse_meta, MetaFile};
+pub use meta_schema::{dump_meta, parse_meta, HashSite, MetaFile};
 pub use names::NameTable;
 pub use xml::{from_xml, to_xml};
 pub use json::to_json;
