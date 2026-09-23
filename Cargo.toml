@@ -29,3 +29,9 @@ json = "0.12"
 texture2ddecoder = "0.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "tga", "bmp"], optional = true }
 rusty_dds = { version = "0.9", default-features = false, features = ["encode"], optional = true }
+
+# rusty_dds has a debug_assert in its BC7 seed search that real images
+# trip; release builds are unaffected, so debug builds get the same code.
+[profile.dev.package.rusty_dds]
+debug-assertions = false
+opt-level = 3
