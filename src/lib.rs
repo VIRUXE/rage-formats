@@ -27,6 +27,9 @@ pub mod json;
 pub mod ymf;
 pub mod texture_utils;
 pub mod dds;
+mod coerce;
+pub mod schema;
+pub mod meta_write;
 #[cfg(feature = "encode")]
 pub mod texture_encode;
 mod rbf;
@@ -37,6 +40,8 @@ pub use resource::{build_rsc7, build_rsc7_with_flags, pack_pages, rsc7_page_coun
                    RSC7_MAGIC, RSC8_MAGIC, SYSTEM_BASE, GRAPHICS_BASE};
 pub use ytd::{parse_ytd, serialize_ytd, full_mip_count, level_size, mip_chain_size, stride_for, TextureFormat, YtdTexture, YTD_VERSION};
 pub use dds::parse_dds;
+pub use schema::Schema;
+pub use meta_write::{build_meta, Written, META_VERSION};
 #[cfg(feature = "encode")]
 pub use texture_encode::{auto_format, encode_texture, is_normal_map_name, EncodeFormat};
 pub use ydd::{parse_ydd, parse_ydr, parse_drawables, Drawable, DrawableBounds, DrawableEntry,

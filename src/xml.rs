@@ -282,7 +282,8 @@ fn element(node: roxmltree::Node<'_, '_>) -> MetaValue {
         };
     }
     let children: Vec<_> = node.children().filter(|c| c.is_element()).collect();
-    let item_type = attr("itemType").map(rage_joaat);
+    // Names the dump could not resolve come back as `hash_XXXXXXXX`.
+    let item_type = attr("itemType").map(crate::coerce::hash_of_str);
     if children.is_empty() {
         let text = node.text().map(str::trim).unwrap_or("");
         if let Some(t) = attr("itemType") {
@@ -304,8 +305,8 @@ fn element(node: roxmltree::Node<'_, '_>) -> MetaValue {
         let items = children.into_iter().map(element).collect();
         return MetaValue::Array(MetaArray { item_type, typed_items, items });
     }
-    let type_hash = rage_joaat(attr("type").unwrap_or(node.tag_name().name()));
-    let fields = children.into_iter().map(|c| (rage_joaat(c.tag_name().name()), element(c))).collect();
+    let type_hash = crate::coerce::hash_of_str(attr("type").unwrap_or(node.tag_name().name()));
+    let fields = children.into_iter().map(|c| (crate::coerce::hash_of_str(c.tag_name().name()), element(c))).collect();
     MetaValue::Struct(MetaStruct { type_hash, fields })
 }
 
