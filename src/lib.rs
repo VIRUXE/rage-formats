@@ -43,7 +43,7 @@ pub use yft::{parse_yft, wheel_slot, Fragment, FragmentChild, FragmentPart, Whee
 pub use ymt::{parse_ymt, PedVariationInfo};
 pub use ytyp::{parse_archetype_txds, parse_ytyp, Archetype, ArchetypeTxd, MloDef, MloEntitySet, MloPortal, MloRoom, Ytyp};
 pub use gtxd::{parse_txd_relationships, TxdRelationship};
-pub use ymap::{parse_ymap, parse_ymap_entities, parse_ymap_header, parse_ymap_mlo_instances, MloInstance, Ymap, YmapEntity, YmapHeader};
+pub use ymap::{parse_ymap, parse_ymap_entities, parse_ymap_header, parse_ymap_mlo_instances, set_map_name, MloInstance, Ymap, YmapEntity, YmapHeader};
 pub use ybn::{parse_ybn, Bound, BoundGeometry, BoundKind, BoundTransform, BoundTriangle, Triangle, Ybn};
 pub use ynv::{parse_ynv, serialize_ynv, cell_bounds, cell_file_name, cell_for_position, NavEdge, NavEdgeEnd, NavPoint,
               NavPoly, NavPortal, Ynv, ADJACENT_NONE};

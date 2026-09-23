@@ -134,6 +134,34 @@ pub fn parse_ymap_header(data: &[u8]) -> Result<YmapHeader> {
     })
 }
 
+/// Gives the map a new `CMapData.name` (and, when `parent` is given, a new
+/// `parent`), by the fixed layout rather than the schema, so it works on
+/// any `.ymap` the header reader accepts. Returns the file re-paged into a
+/// fresh RSC7 container of the same version, with how many fields changed.
+pub fn set_map_name(data: &[u8], name_hash: u32, parent: Option<u32>) -> Result<(Vec<u8>, usize)> {
+    let (mut system, graphics) = prepare_rsc7(data)?;
+    let version = crate::resource::resource_version_from_flags(u32_le(data, 8), u32_le(data, 12));
+    let offset = {
+        let reader = ResReader { system: &system, graphics: &graphics };
+        let blocks = read_meta_blocks(&reader).context("ymap")?;
+        let map = blocks.iter().find(|b| b.name_hash == HASH_CMAPDATA).context("ymap: CMapData block not found")?;
+        if map.data.len() < 96 {
+            bail!("ymap: CMapData block too small");
+        }
+        map.system_offset.context("ymap: CMapData block is not in the system section")?
+    };
+    let mut changed = 0;
+    if u32_le(&system, offset + 8) != name_hash {
+        system[offset + 8..offset + 12].copy_from_slice(&name_hash.to_le_bytes());
+        changed += 1;
+    }
+    if let Some(p) = parent.filter(|&p| u32_le(&system, offset + 12) != p) {
+        system[offset + 12..offset + 16].copy_from_slice(&p.to_le_bytes());
+        changed += 1;
+    }
+    Ok((crate::resource::build_rsc7(version, &system, &graphics), changed))
+}
+
 /// Header, entities and interior placements in one go.
 pub fn parse_ymap(data: &[u8]) -> Result<Ymap> {
     Ok(Ymap { header: parse_ymap_header(data)?, entities: parse_ymap_entities(data)?, mlo_instances: parse_ymap_mlo_instances(data)? })
@@ -282,6 +310,19 @@ pub mod tests {
             put_f32(&mut sys, e + 76, 100.0);
         }
         build_rsc7(2, &sys, &[])
+    }
+
+    #[test]
+    fn the_map_name_is_set_by_layout() {
+        let data = sample_exterior_ymap("map1", &[("prop_a", Vec3::new(10.0, 20.0, 30.0), 90.0)]);
+        let (renamed, changed) = set_map_name(&data, rage_joaat("casas_praia_extras"), Some(rage_joaat("parent_map"))).unwrap();
+        assert_eq!(changed, 2);
+        let ymap = parse_ymap(&renamed).unwrap();
+        assert_eq!(ymap.header.name_hash, rage_joaat("casas_praia_extras"));
+        assert_eq!(ymap.header.parent_hash, rage_joaat("parent_map"));
+        assert_eq!(ymap.entities.len(), 1);
+        assert_eq!(ymap.entities[0].position, Vec3::new(10.0, 20.0, 30.0));
+        assert_eq!(set_map_name(&renamed, rage_joaat("casas_praia_extras"), None).unwrap().1, 0);
     }
 
     #[test]
