@@ -140,20 +140,81 @@ impl YtdTexture {
                 out.extend_from_slice(b"DX10");               // FourCC = DX10
                 out.extend_from_slice(&[0u8; 20]);
             }
-            TextureFormat::A8R8G8B8 => {
-                out.extend_from_slice(&(0x1 | 0x40u32).to_le_bytes()); // ALPHAPIXELS | RGB
-                out.extend_from_slice(&[0u8; 4]); // FourCC = 0
-                out.extend_from_slice(&32u32.to_le_bytes()); // dwRGBBitCount
-                out.extend_from_slice(&0x00FF0000u32.to_le_bytes()); // RMask
-                out.extend_from_slice(&0x0000FF00u32.to_le_bytes()); // GMask
-                out.extend_from_slice(&0x000000FFu32.to_le_bytes()); // BMask
-                out.extend_from_slice(&0xFF000000u32.to_le_bytes()); // AMask
-            }
-            _ => {
-                out.extend_from_slice(&[0u8; 28]);
-            }
+            // Uncompressed: (flags, bit count, R, G, B, A masks)
+            TextureFormat::A8R8G8B8 => write_masks(out, 0x41, 32, 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000),
+            TextureFormat::X8R8G8B8 => write_masks(out, 0x40, 32, 0x00FF0000, 0x0000FF00, 0x000000FF, 0),
+            TextureFormat::A8B8G8R8 => write_masks(out, 0x41, 32, 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000),
+            TextureFormat::A1R5G5B5 => write_masks(out, 0x41, 16, 0x7C00, 0x03E0, 0x001F, 0x8000),
+            TextureFormat::A8       => write_masks(out, 0x2, 8, 0, 0, 0, 0xFF),
+            TextureFormat::L8       => write_masks(out, 0x20000, 8, 0xFF, 0, 0, 0),
+            TextureFormat::Unknown  => out.extend_from_slice(&[0u8; 28]),
         }
     }
+}
+
+fn write_masks(out: &mut Vec<u8>, flags: u32, bits: u32, r: u32, g: u32, b: u32, a: u32) {
+    for v in [flags, 0, bits, r, g, b, a] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// Bytes per 4x4 block for a compressed format, or bits per pixel otherwise.
+fn format_density(format: TextureFormat) -> (bool, usize) {
+    match format {
+        TextureFormat::DXT1 | TextureFormat::ATI1 => (true, 8),
+        TextureFormat::DXT3 | TextureFormat::DXT5 | TextureFormat::ATI2 | TextureFormat::BC7 => (true, 16),
+        TextureFormat::A8R8G8B8 | TextureFormat::X8R8G8B8 | TextureFormat::A8B8G8R8 => (false, 32),
+        TextureFormat::A1R5G5B5 => (false, 16),
+        TextureFormat::A8 | TextureFormat::L8 => (false, 8),
+        TextureFormat::Unknown => (false, 0),
+    }
+}
+
+/// Byte size of one mip level as laid out in memory (DirectXTex's slice
+/// pitch: whole 4x4 blocks for compressed formats).
+pub fn level_size(format: TextureFormat, width: u16, height: u16) -> usize {
+    let (blocks, density) = format_density(format);
+    if blocks {
+        let bw = (width as usize).div_ceil(4).max(1);
+        let bh = (height as usize).div_ceil(4).max(1);
+        bw * bh * density
+    } else {
+        (width as usize * density).div_ceil(8) * height as usize
+    }
+}
+
+/// The `stride` the game stores for a texture: the top level's slice pitch
+/// divided by its height, which is what CodeWalker writes on import too.
+pub fn stride_for(format: TextureFormat, width: u16, height: u16) -> u16 {
+    (level_size(format, width, height) / height.max(1) as usize) as u16
+}
+
+/// Total bytes of a `levels`-deep mip chain, each level half the previous
+/// in both directions (never below 1 pixel).
+pub fn mip_chain_size(format: TextureFormat, width: u16, height: u16, levels: u8) -> usize {
+    let (mut w, mut h) = (width, height);
+    let mut total = 0;
+    for _ in 0..levels {
+        total += level_size(format, w, h);
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    total
+}
+
+/// How many mip levels a texture of this size can carry so that the game's
+/// own size arithmetic (each level a quarter of the previous) stays exact:
+/// down to 4x4 for block-compressed formats, 1x1 otherwise.
+pub fn full_mip_count(format: TextureFormat, width: u16, height: u16) -> u8 {
+    let floor = if format.is_block_compressed() { 4 } else { 1 };
+    let mut levels = 1u8;
+    let (mut w, mut h) = (width, height);
+    while w / 2 >= floor && h / 2 >= floor && levels < u8::MAX {
+        w /= 2;
+        h /= 2;
+        levels += 1;
+    }
+    levels
 }
 
 fn write_dx10_header(out: &mut Vec<u8>) {
@@ -248,4 +309,197 @@ fn calc_pixel_data_size(stride: u16, height: u16, levels: u8) -> usize {
         length /= 4;
     }
     total
+}
+
+// ─── Writer ───────────────────────────────────────────────────────────────────
+
+/// Resource version of a .ytd.
+pub const YTD_VERSION: u32 = 13;
+
+const DICT_SIZE: usize = 0x40;
+const TEXTURE_SIZE: usize = 0x90;
+
+/// Builds a .ytd (RSC7, version 13) from textures, laid out as CodeWalker's
+/// `TextureDictionary.Save` does: entries sorted by name hash, the hash and
+/// pointer lists, texture structs and name strings packed into system pages,
+/// each texture's pixel data packed into graphics pages.
+///
+/// A texture whose `name_hash` is 0 is hashed from its lowercased name.
+/// Duplicate hashes are an error, since a dictionary is looked up by hash.
+pub fn serialize_ytd(textures: &[YtdTexture]) -> Result<Vec<u8>> {
+    use crate::resource::{build_rsc7_with_flags, pack_pages, rsc7_page_count, GRAPHICS_BASE};
+
+    let mut entries: Vec<(u32, &YtdTexture)> = textures
+        .iter()
+        .map(|t| {
+            let hash = if t.name_hash != 0 { t.name_hash } else { crate::rage_joaat(&t.name.to_lowercase()) };
+            (hash, t)
+        })
+        .collect();
+    entries.sort_by_key(|(hash, _)| *hash);
+    if let Some(w) = entries.windows(2).find(|w| w[0].0 == w[1].0) {
+        anyhow::bail!("textures '{}' and '{}' share the name hash 0x{:08X}", w[0].1.name, w[1].1.name, w[0].0);
+    }
+    let count = entries.len();
+    if count > u16::MAX as usize {
+        anyhow::bail!("{count} textures; a dictionary holds at most 65535");
+    }
+    for (_, tex) in &entries {
+        let expected = mip_chain_size(tex.format, tex.width, tex.height, tex.levels) * tex.depth.max(1) as usize;
+        if tex.pixel_data.len() < expected {
+            anyhow::bail!(
+                "texture '{}': {}x{} {} with {} mip(s) needs {} bytes of pixel data, has {}",
+                tex.name, tex.width, tex.height, tex.format, tex.levels, expected, tex.pixel_data.len()
+            );
+        }
+    }
+
+    // Graphics: one block per texture with pixel data.
+    let gfx_sizes: Vec<usize> = entries.iter().map(|(_, t)| t.pixel_data.len()).filter(|&n| n > 0).collect();
+    let gfx = pack_pages(&gfx_sizes, false, 128)?;
+    let gfx_pages = rsc7_page_count(gfx.flags);
+
+    // System: dictionary, page map, hash list, pointer list, textures, names.
+    // The page map's size depends on the page count, so lay out until stable.
+    let mut sys_pages = 1;
+    let sys = loop {
+        let pagemap_size = 16 + 8 * (sys_pages + gfx_pages);
+        let mut sizes = vec![DICT_SIZE, pagemap_size, count * 4, count * 8];
+        sizes.extend(std::iter::repeat_n(TEXTURE_SIZE, count));
+        sizes.extend(entries.iter().map(|(_, t)| t.name.len() + 1));
+        let layout = pack_pages(&sizes, true, 128 - gfx_pages)?;
+        let pages = rsc7_page_count(layout.flags);
+        if pages == sys_pages {
+            break layout;
+        }
+        sys_pages = pages;
+    };
+
+    let mut system = vec![0u8; sys.size];
+    let va = |off: usize| SYSTEM_BASE + off as u64;
+    let put_u16 = |buf: &mut [u8], off: usize, v: u16| buf[off..off + 2].copy_from_slice(&v.to_le_bytes());
+    let put_u32 = |buf: &mut [u8], off: usize, v: u32| buf[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    let put_u64 = |buf: &mut [u8], off: usize, v: u64| buf[off..off + 8].copy_from_slice(&v.to_le_bytes());
+
+    let [dict_off, pagemap_off, hashes_off, ptrs_off] = [sys.offsets[0], sys.offsets[1], sys.offsets[2], sys.offsets[3]];
+    let tex_offs = &sys.offsets[4..4 + count];
+    let name_offs = &sys.offsets[4 + count..];
+
+    put_u32(&mut system, dict_off + 0x04, 1);
+    put_u64(&mut system, dict_off + 0x08, va(pagemap_off));
+    put_u32(&mut system, dict_off + 0x18, 1);
+    put_u64(&mut system, dict_off + 0x20, if count > 0 { va(hashes_off) } else { 0 });
+    put_u16(&mut system, dict_off + 0x28, count as u16);
+    put_u16(&mut system, dict_off + 0x2A, count as u16);
+    put_u64(&mut system, dict_off + 0x30, if count > 0 { va(ptrs_off) } else { 0 });
+    put_u16(&mut system, dict_off + 0x38, count as u16);
+    put_u16(&mut system, dict_off + 0x3A, count as u16);
+
+    system[pagemap_off + 8] = sys_pages as u8;
+    system[pagemap_off + 9] = gfx_pages as u8;
+
+    let mut graphics = vec![0u8; gfx.size];
+    let mut gfx_block = 0;
+    for (i, (hash, tex)) in entries.iter().enumerate() {
+        put_u32(&mut system, hashes_off + i * 4, *hash);
+        put_u64(&mut system, ptrs_off + i * 8, va(tex_offs[i]));
+
+        let t = tex_offs[i];
+        put_u32(&mut system, t + 0x04, 1);
+        put_u64(&mut system, t + 0x28, va(name_offs[i]));
+        put_u16(&mut system, t + 0x30, 1);
+        put_u16(&mut system, t + 0x50, tex.width);
+        put_u16(&mut system, t + 0x52, tex.height);
+        put_u16(&mut system, t + 0x54, tex.depth.max(1));
+        put_u16(&mut system, t + 0x56, tex.stride);
+        put_u32(&mut system, t + 0x58, tex.format as u32);
+        system[t + 0x5D] = tex.levels;
+        if !tex.pixel_data.is_empty() {
+            let off = gfx.offsets[gfx_block];
+            gfx_block += 1;
+            graphics[off..off + tex.pixel_data.len()].copy_from_slice(&tex.pixel_data);
+            put_u64(&mut system, t + 0x70, GRAPHICS_BASE + off as u64);
+        }
+
+        let n = name_offs[i];
+        system[n..n + tex.name.len()].copy_from_slice(tex.name.as_bytes());
+    }
+
+    Ok(build_rsc7_with_flags(YTD_VERSION, sys.flags, &system, gfx.flags, &graphics))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tex(name: &str, format: TextureFormat, width: u16, height: u16) -> YtdTexture {
+        let levels = full_mip_count(format, width, height);
+        let size = mip_chain_size(format, width, height, levels);
+        YtdTexture {
+            name: name.into(),
+            name_hash: 0,
+            width,
+            height,
+            depth: 1,
+            format,
+            levels,
+            stride: stride_for(format, width, height),
+            pixel_data: (0..size).map(|i| (i.wrapping_mul(31) % 253) as u8).collect(),
+        }
+    }
+
+    #[test]
+    fn mip_arithmetic_matches_the_games() {
+        assert_eq!(stride_for(TextureFormat::DXT5, 512, 512), 512);
+        assert_eq!(stride_for(TextureFormat::DXT1, 512, 256), 256);
+        assert_eq!(stride_for(TextureFormat::A8R8G8B8, 64, 64), 256);
+        assert_eq!(full_mip_count(TextureFormat::DXT5, 512, 256), 7);
+        assert_eq!(full_mip_count(TextureFormat::DXT1, 4, 4), 1);
+        assert_eq!(full_mip_count(TextureFormat::A8R8G8B8, 8, 2), 2);
+        // The parser's size formula (stride*height, quartered per level) and
+        // the true chain size agree for every level the count allows.
+        let t = tex("a", TextureFormat::DXT5, 512, 256);
+        assert_eq!(calc_pixel_data_size(t.stride, t.height, t.levels), t.pixel_data.len());
+    }
+
+    #[test]
+    fn serialize_round_trips_through_parse_ytd() {
+        let input = vec![
+            tex("Zed_diffuse", TextureFormat::DXT1, 256, 128),
+            tex("alpha_n", TextureFormat::ATI2, 64, 64),
+            tex("big", TextureFormat::BC7, 1024, 1024),
+            tex("flat", TextureFormat::A8R8G8B8, 16, 16),
+        ];
+        let bytes = serialize_ytd(&input).unwrap();
+        let back = parse_ytd(&bytes).unwrap();
+        assert_eq!(back.len(), input.len());
+        // Sorted by hash on the way out.
+        let mut hashes: Vec<u32> = back.iter().map(|t| t.name_hash).collect();
+        hashes.sort();
+        assert_eq!(hashes, back.iter().map(|t| t.name_hash).collect::<Vec<_>>());
+        for want in &input {
+            let got = back.iter().find(|t| t.name == want.name).unwrap_or_else(|| panic!("{} missing", want.name));
+            assert_eq!(got.name_hash, crate::rage_joaat(&want.name.to_lowercase()));
+            assert_eq!((got.width, got.height, got.depth, got.format, got.levels, got.stride),
+                       (want.width, want.height, 1, want.format, want.levels, want.stride), "{}", want.name);
+            assert_eq!(got.pixel_data, want.pixel_data, "{}", want.name);
+        }
+        assert_eq!(crate::resource::u32_le(&bytes, 4), YTD_VERSION);
+    }
+
+    #[test]
+    fn serialize_handles_an_empty_dictionary() {
+        let bytes = serialize_ytd(&[]).unwrap();
+        assert!(parse_ytd(&bytes).unwrap().is_empty());
+    }
+
+    #[test]
+    fn serialize_rejects_duplicate_names_and_short_data() {
+        let err = serialize_ytd(&[tex("a", TextureFormat::DXT1, 8, 8), tex("A", TextureFormat::DXT1, 8, 8)]).unwrap_err();
+        assert!(err.to_string().contains("share the name hash"), "{err}");
+        let mut short = tex("s", TextureFormat::DXT5, 16, 16);
+        short.pixel_data.truncate(3);
+        let err = serialize_ytd(&[short]).unwrap_err();
+        assert!(err.to_string().contains("needs"), "{err}");
+    }
 }

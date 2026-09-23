@@ -411,16 +411,127 @@ pub fn build_rsc7_paged(version: u32, system: &[u8], page_size: usize) -> Result
 /// page layout its flags describe. Version is the pair of nibbles
 /// [`resource_version_from_flags`] reads back (e.g. 2 for a .ynv, 165 for a .ydr).
 pub fn build_rsc7(version: u32, system: &[u8], graphics: &[u8]) -> Vec<u8> {
-    let sys_flags = rsc7_flags_for_size(system.len().max(1)).expect("section fits") | ((version >> 4) & 0xF) << 28;
-    let gfx_flags = if graphics.is_empty() { 0 } else { rsc7_flags_for_size(graphics.len()).expect("section fits") }
-        | (version & 0xF) << 28;
-    let mut body = Vec::with_capacity(resource_size_from_flags(sys_flags) + resource_size_from_flags(gfx_flags));
+    let sys_flags = rsc7_flags_for_size(system.len().max(1)).expect("section fits");
+    let gfx_flags = if graphics.is_empty() { 0 } else { rsc7_flags_for_size(graphics.len()).expect("section fits") };
+    build_rsc7_with_flags(version, sys_flags, system, gfx_flags, graphics)
+}
+
+/// [`build_rsc7`] with the page flags chosen by the caller (the version
+/// nibbles are added here), for sections laid out by [`pack_pages`].
+pub fn build_rsc7_with_flags(version: u32, sys_flags: u32, system: &[u8], gfx_flags: u32, graphics: &[u8]) -> Vec<u8> {
+    let sys_flags = (sys_flags & 0x0FFF_FFFF) | ((version >> 4) & 0xF) << 28;
+    let gfx_flags = (gfx_flags & 0x0FFF_FFFF) | (version & 0xF) << 28;
+    let sys_size = resource_size_from_flags(sys_flags);
+    let gfx_size = resource_size_from_flags(gfx_flags);
+    assert!(system.len() <= sys_size && graphics.len() <= gfx_size, "sections exceed their page flags");
+    let mut body = Vec::with_capacity(sys_size + gfx_size);
     body.extend_from_slice(system);
-    body.resize(resource_size_from_flags(sys_flags), 0);
+    body.resize(sys_size, 0);
     body.extend_from_slice(graphics);
-    body.resize(resource_size_from_flags(sys_flags) + resource_size_from_flags(gfx_flags), 0);
+    body.resize(sys_size + gfx_size, 0);
 
     wrap_rsc7(version, sys_flags, gfx_flags, &body)
+}
+
+/// Number of pages an RSC7 flag word describes.
+pub fn rsc7_page_count(flags: u32) -> usize {
+    let tail = ((flags >> 24) & 0xF).count_ones() as usize;
+    let sized = ((flags >> 4) & 0x1) + ((flags >> 5) & 0x3) + ((flags >> 7) & 0xF) + ((flags >> 11) & 0x3F) + ((flags >> 17) & 0x7F);
+    tail + sized as usize
+}
+
+/// Where each block of a section landed after [`pack_pages`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PagedLayout {
+    /// RSC7 flags (page sizes and counts, no version nibble) for the section.
+    pub flags: u32,
+    /// Byte offset of each input block from the start of the section.
+    pub offsets: Vec<usize>,
+    /// Total size of the section, the sum of its pages.
+    pub size: usize,
+}
+
+/// Packs blocks of the given sizes into RSC7 pages the way CodeWalker's
+/// `ResourceBuilder` does. The game maps each page as its own allocation,
+/// so no block may straddle two pages; blocks are placed first-fit into
+/// pages of five sizes (`0x2000 << shift` times 1, 2, 4, 8 and 16), largest
+/// blocks first and 16-byte aligned, and the base shift grows until the
+/// per-size page counts fit the flag word and `max_pages` in total.
+///
+/// With `root_first` the first block is placed at offset 0 regardless of
+/// its size, as a resource's root struct must be.
+pub fn pack_pages(sizes: &[usize], root_first: bool, max_pages: usize) -> Result<PagedLayout> {
+    const ALIGN: usize = 16;
+    const CAPS: [usize; 5] = [0x7F, 0x3F, 0xF, 0x3, 0x1];
+    const FLAG_SHIFTS: [u32; 5] = [17, 11, 7, 5, 4];
+
+    if sizes.is_empty() {
+        return Ok(PagedLayout { flags: 0, offsets: vec![], size: 0 });
+    }
+    let max_block = *sizes.iter().max().unwrap();
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    let sortable = if root_first { &mut order[1..] } else { &mut order[..] };
+    sortable.sort_by(|a, b| sizes[*b].cmp(&sizes[*a]));
+
+    for shift in 0u32..16 {
+        let base = 0x2000usize << shift;
+        if base * 16 < max_block {
+            continue;
+        }
+        let mut top = 0;
+        while (base << top) < max_block {
+            top += 1;
+        }
+        // Fill level of every page, per page size.
+        let mut pages: [Vec<usize>; 5] = Default::default();
+        let mut place = vec![(0usize, 0usize, 0usize); sizes.len()];
+        for (k, &i) in order.iter().enumerate() {
+            let size = sizes[i];
+            if k == 0 {
+                pages[top].push(size);
+                place[i] = (top, 0, 0);
+                continue;
+            }
+            let mut want = 0;
+            while size > (base << want) && want < top {
+                want += 1;
+            }
+            let mut found = false;
+            'pages: for t in want..=top {
+                for (p, fill) in pages[t].iter_mut().enumerate() {
+                    let at = fill.next_multiple_of(ALIGN);
+                    if at + size <= (base << t) {
+                        *fill = at + size;
+                        place[i] = (t, p, at);
+                        found = true;
+                        break 'pages;
+                    }
+                }
+            }
+            if !found {
+                place[i] = (want, pages[want].len(), 0);
+                pages[want].push(size);
+            }
+        }
+        let counts: Vec<usize> = pages.iter().map(Vec::len).collect();
+        let fits = counts.iter().zip(CAPS).all(|(c, cap)| *c <= cap) && counts.iter().sum::<usize>() <= max_pages;
+        if !fits {
+            continue;
+        }
+        let mut page_base = [0usize; 5];
+        let mut size = 0;
+        for t in (0..5).rev() {
+            page_base[t] = size;
+            size += (base << t) * counts[t];
+        }
+        let offsets = place.iter().map(|&(t, p, at)| page_base[t] + (base << t) * p + at).collect();
+        let mut flags = shift;
+        for (t, fs) in FLAG_SHIFTS.iter().enumerate() {
+            flags |= (counts[t] as u32) << fs;
+        }
+        return Ok(PagedLayout { flags, offsets, size });
+    }
+    bail!("{} blocks ({} bytes in the largest) do not fit in {} RSC7 pages", sizes.len(), max_block, max_pages)
 }
 
 fn wrap_rsc7(version: u32, sys_flags: u32, gfx_flags: u32, body: &[u8]) -> Vec<u8> {
@@ -481,5 +592,64 @@ mod writer_tests {
         let (sys, gfx) = prepare_rsc7(&file).unwrap();
         assert_eq!(&sys[..system.len()], &system[..]);
         assert!(gfx.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::*;
+
+    #[test]
+    fn small_blocks_share_one_base_page_with_the_root_first() {
+        let layout = pack_pages(&[0x40, 0x410, 20, 40, 0x90, 0x90, 7], true, 128).unwrap();
+        assert_eq!(layout.offsets[0], 0);
+        assert_eq!(layout.size, 0x2000);
+        assert_eq!(rsc7_page_count(layout.flags), 1);
+        assert_eq!(resource_size_from_flags(layout.flags), 0x2000);
+        // Every block is 16-aligned and inside the section, none overlap.
+        let sizes = [0x40, 0x410, 20, 40, 0x90, 0x90, 7];
+        let mut spans: Vec<(usize, usize)> = layout.offsets.iter().zip(sizes).map(|(&o, s)| (o, o + s)).collect();
+        spans.sort();
+        for w in spans.windows(2) {
+            assert!(w[0].1 <= w[1].0, "{spans:?}");
+        }
+        assert!(layout.offsets.iter().all(|o| o % 16 == 0));
+    }
+
+    #[test]
+    fn no_block_straddles_a_page() {
+        let sizes = [349520, 220800, 349520, 349520, 360000, 16, 16, 43688];
+        let layout = pack_pages(&sizes, false, 128).unwrap();
+        assert_eq!(resource_size_from_flags(layout.flags), layout.size);
+        let base = 0x2000usize << (layout.flags & 0xF);
+        // Reconstruct page boundaries: sizes largest first.
+        let counts = [(layout.flags >> 17) & 0x7F, (layout.flags >> 11) & 0x3F, (layout.flags >> 7) & 0xF, (layout.flags >> 5) & 0x3, (layout.flags >> 4) & 0x1];
+        let mut bounds = vec![];
+        let mut at = 0;
+        for t in (0..5).rev() {
+            for _ in 0..counts[t] {
+                bounds.push((at, at + (base << t)));
+                at += base << t;
+            }
+        }
+        for (&o, s) in layout.offsets.iter().zip(sizes) {
+            assert!(bounds.iter().any(|&(lo, hi)| o >= lo && o + s <= hi), "block at {o} ({s} B) crosses a page: {bounds:?}");
+        }
+        assert!(layout.size <= sizes.iter().sum::<usize>() * 2, "packing wastes too much: {}", layout.size);
+    }
+
+    #[test]
+    fn empty_input_is_an_empty_section() {
+        assert_eq!(pack_pages(&[], true, 128).unwrap(), PagedLayout { flags: 0, offsets: vec![], size: 0 });
+    }
+
+    #[test]
+    fn page_count_matches_size_arithmetic() {
+        for flags in [0x00020000u32, 0x1080006, 0x0000a04, 0x0000040, 0x0000_0010, 0x0f00_0000] {
+            let n = rsc7_page_count(flags);
+            assert!(n >= 1 || resource_size_from_flags(flags) == 0, "{flags:08x}");
+        }
+        assert_eq!(rsc7_page_count(0x0000_0040), 2);
+        assert_eq!(rsc7_page_count(0x0108_0006), 5);
     }
 }
