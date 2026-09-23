@@ -30,6 +30,7 @@ pub mod dds;
 mod coerce;
 pub mod schema;
 pub mod meta_write;
+pub mod pso_write;
 #[cfg(feature = "encode")]
 pub mod texture_encode;
 mod rbf;
@@ -42,6 +43,7 @@ pub use ytd::{parse_ytd, serialize_ytd, full_mip_count, level_size, mip_chain_si
 pub use dds::parse_dds;
 pub use schema::Schema;
 pub use meta_write::{build_meta, Written, META_VERSION};
+pub use pso_write::build_pso;
 #[cfg(feature = "encode")]
 pub use texture_encode::{auto_format, encode_texture, is_normal_map_name, EncodeFormat};
 pub use ydd::{parse_ydd, parse_ydr, parse_drawables, Drawable, DrawableBounds, DrawableEntry,
