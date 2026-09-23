@@ -231,8 +231,11 @@ let json = to_json(&dump.root, &names).pretty(2);  // {"$type": "CMapData", "nam
 The tree is `MetaValue`: structures with hashed member names, arrays,
 vectors, hashes, strings, enums and flags. `MetaStruct::field("name")`
 looks a member up by name. Hashes with no known name print as
-`hash_XXXXXXXX`; the built-in list names every structure and member of the
-map formats, and `NameTable::add_list` takes more (one name per line), so
+`hash_XXXXXXXX`; the built-in list names every structure, member and enum
+CodeWalker knows (some 20,000 of the game's own schema names, compiled
+from its `MetaNames` table and each verified against its hash — `itemType` names like
+`CVehicleModelColorIndices` never appear in any file and can only come from
+such a table), and `NameTable::add_list` takes more (one name per line), so
 content names — archetypes, texture dictionaries — can be supplied by
 whoever knows them. `from_xml` reads the XML layout back into a tree.
 

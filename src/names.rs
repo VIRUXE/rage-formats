@@ -13,6 +13,12 @@ use crate::hash::rage_joaat;
 /// The built-in name list, one name per line, `#` comments allowed.
 pub const CORE_NAMES: &str = include_str!("names/core.txt");
 
+/// The structure, member, enum and value names the game hashes, as
+/// CodeWalker's MetaNames table lists them, each verified against its hash. These are the
+/// schema names no archive scan can recover — `CVehicleModelColorIndices`
+/// is an `itemType`, never a file — so they are built in.
+pub const CODEWALKER_NAMES: &str = include_str!("names/codewalker.txt");
+
 /// A hash → name lookup.
 #[derive(Debug, Clone, Default)]
 pub struct NameTable {
@@ -25,10 +31,11 @@ impl NameTable {
         Self::default()
     }
 
-    /// The built-in names.
+    /// The built-in names: this crate's own list, then CodeWalker's.
     pub fn core() -> Self {
         let mut t = Self::default();
         t.add_list(CORE_NAMES);
+        t.add_list(CODEWALKER_NAMES);
         t
     }
 
@@ -108,7 +115,23 @@ mod tests {
         assert_eq!(t.get(164_374_718), Some("CMloInstanceDef"));
         assert_eq!(t.get(273_704_021), Some("CMloArchetypeDef"));
         assert_eq!(t.get(2_477_165_103), Some("CPackFileMetaData"));
-        assert!(t.len() > 300);
+        assert!(t.len() > 20_000);
+        // Schema names that only a built-in table can supply.
+        assert_eq!(t.get(rage_joaat("CVehicleModelColorIndices")), Some("CVehicleModelColorIndices"));
+        assert_eq!(t.get(rage_joaat("CVehicleModelInfoVarGlobal")), Some("CVehicleModelInfoVarGlobal"));
+    }
+
+    #[test]
+    fn every_codewalker_name_is_its_own_hash_source() {
+        // The list is filtered on generation; this keeps it that way.
+        for line in CODEWALKER_NAMES.lines() {
+            let name = line.trim();
+            if name.is_empty() || name.starts_with('#') {
+                continue;
+            }
+            assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{name:?}");
+        }
+        assert!(CODEWALKER_NAMES.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).count() > 20_000);
     }
 
     #[test]
