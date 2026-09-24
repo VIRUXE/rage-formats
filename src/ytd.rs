@@ -69,7 +69,9 @@ impl std::fmt::Display for TextureFormat {
     }
 }
 
-/// One texture entry extracted from a YTD.
+/// One texture entry extracted from a YTD. `pixel_data` holds every mip
+/// level as the game stores them (see [`ytd_chain_size`]); [`YtdTexture::to_dds`]
+/// re-lays it out the way a DDS file expects.
 #[derive(Debug, Clone)]
 pub struct YtdTexture {
     pub name: String,
@@ -121,7 +123,7 @@ impl YtdTexture {
         if self.format == TextureFormat::BC7 {
             write_dx10_header(&mut out);
         }
-        out.extend_from_slice(&self.pixel_data);
+        out.extend_from_slice(&to_dds_layout(self.format, self.width, self.height, self.stride, self.levels, &self.pixel_data));
 
         out
     }
@@ -200,6 +202,62 @@ pub fn mip_chain_size(format: TextureFormat, width: u16, height: u16, levels: u8
         h = (h / 2).max(1);
     }
     total
+}
+
+/// Byte size of each level in the two layouts a mip chain has: how the
+/// game stores it (each level a quarter of the previous, counting down
+/// from `stride * height`, so a 2x2 or 1x1 block level is 4 or 1 bytes) and
+/// how a DDS stores it (whole 4x4 blocks, or whole rows).
+fn level_sizes(format: TextureFormat, width: u16, height: u16, stride: u16, levels: u8) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(levels as usize);
+    let (mut w, mut h) = (width, height);
+    let mut game = stride as usize * height as usize;
+    for _ in 0..levels {
+        out.push((game, level_size(format, w, h)));
+        game /= 4;
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    out
+}
+
+/// Total bytes of a mip chain as the game stores it in a `.ytd` (see
+/// [`level_sizes`]); equals [`mip_chain_size`] while every level is at
+/// least a whole block.
+pub fn ytd_chain_size(format: TextureFormat, width: u16, height: u16, levels: u8) -> usize {
+    calc_pixel_data_size(stride_for(format, width, height), height, levels)
+}
+
+/// Re-lays a chain stored the game's way out as a DDS holds it, padding
+/// each level below one block with zeros.
+pub fn to_dds_layout(format: TextureFormat, width: u16, height: u16, stride: u16, levels: u8, data: &[u8]) -> Vec<u8> {
+    let sizes = level_sizes(format, width, height, stride, levels);
+    let mut out = Vec::with_capacity(sizes.iter().map(|s| s.1).sum());
+    let mut at = 0;
+    for (game, dds) in sizes {
+        let have = data.get(at..(at + game).min(data.len())).unwrap_or(&[]);
+        let n = have.len().min(dds);
+        out.extend_from_slice(&have[..n]);
+        out.resize(out.len() + dds - n, 0);
+        at += game;
+    }
+    out
+}
+
+/// The inverse of [`to_dds_layout`]: a DDS chain re-laid out as the game
+/// stores it (a level below one block keeps only its first bytes).
+pub fn to_ytd_layout(format: TextureFormat, width: u16, height: u16, stride: u16, levels: u8, data: &[u8]) -> Vec<u8> {
+    let sizes = level_sizes(format, width, height, stride, levels);
+    let mut out = Vec::with_capacity(sizes.iter().map(|s| s.0).sum());
+    let mut at = 0;
+    for (game, dds) in sizes {
+        let have = data.get(at..(at + dds).min(data.len())).unwrap_or(&[]);
+        let n = have.len().min(game);
+        out.extend_from_slice(&have[..n]);
+        out.resize(out.len() + game - n, 0);
+        at += dds;
+    }
+    out
 }
 
 /// How many mip levels a texture of this size can carry so that the game's
@@ -345,7 +403,7 @@ pub fn serialize_ytd(textures: &[YtdTexture]) -> Result<Vec<u8>> {
         anyhow::bail!("{count} textures; a dictionary holds at most 65535");
     }
     for (_, tex) in &entries {
-        let expected = mip_chain_size(tex.format, tex.width, tex.height, tex.levels) * tex.depth.max(1) as usize;
+        let expected = calc_pixel_data_size(tex.stride, tex.height, tex.levels) * tex.depth.max(1) as usize;
         if tex.pixel_data.len() < expected {
             anyhow::bail!(
                 "texture '{}': {}x{} {} with {} mip(s) needs {} bytes of pixel data, has {}",
@@ -355,7 +413,8 @@ pub fn serialize_ytd(textures: &[YtdTexture]) -> Result<Vec<u8>> {
     }
 
     // Graphics: one block per texture with pixel data.
-    let gfx_sizes: Vec<usize> = entries.iter().map(|(_, t)| t.pixel_data.len()).filter(|&n| n > 0).collect();
+    let data_len = |t: &YtdTexture| calc_pixel_data_size(t.stride, t.height, t.levels) * t.depth.max(1) as usize;
+    let gfx_sizes: Vec<usize> = entries.iter().map(|(_, t)| data_len(t)).filter(|&n| n > 0).collect();
     let gfx = pack_pages(&gfx_sizes, false, 128)?;
     let gfx_pages = rsc7_page_count(gfx.flags);
 
@@ -414,10 +473,11 @@ pub fn serialize_ytd(textures: &[YtdTexture]) -> Result<Vec<u8>> {
         put_u16(&mut system, t + 0x56, tex.stride);
         put_u32(&mut system, t + 0x58, tex.format as u32);
         system[t + 0x5D] = tex.levels;
-        if !tex.pixel_data.is_empty() {
+        let len = data_len(tex);
+        if len > 0 {
             let off = gfx.offsets[gfx_block];
             gfx_block += 1;
-            graphics[off..off + tex.pixel_data.len()].copy_from_slice(&tex.pixel_data);
+            graphics[off..off + len].copy_from_slice(&tex.pixel_data[..len]);
             put_u64(&mut system, t + 0x70, GRAPHICS_BASE + off as u64);
         }
 
@@ -485,6 +545,40 @@ mod tests {
             assert_eq!(got.pixel_data, want.pixel_data, "{}", want.name);
         }
         assert_eq!(crate::resource::u32_le(&bytes, 4), YTD_VERSION);
+    }
+
+
+    #[test]
+    fn tail_mips_below_one_block_keep_the_games_sizes_and_pad_out_to_dds() {
+        // 256x256 DXT5 down to 1x1: the game stores 9 levels in 87381 bytes
+        // (…16, 4, 1), a DDS in 87408 (…16, 16, 16).
+        let levels = 9;
+        let game = ytd_chain_size(TextureFormat::DXT5, 256, 256, levels);
+        let dds = mip_chain_size(TextureFormat::DXT5, 256, 256, levels);
+        assert_eq!((game, dds), (87381, 87408));
+        let mut tex = tex("t", TextureFormat::DXT5, 256, 256);
+        tex.levels = levels;
+        tex.pixel_data = (0..game).map(|i| (i % 251) as u8).collect();
+
+        let bytes = serialize_ytd(&[tex.clone()]).unwrap();
+        let back = &parse_ytd(&bytes).unwrap()[0];
+        assert_eq!(back.pixel_data, tex.pixel_data);
+
+        let dds_bytes = back.to_dds();
+        assert_eq!(dds_bytes.len(), 128 + dds);
+        let from_dds = crate::parse_dds(&dds_bytes).unwrap();
+        assert_eq!(from_dds.levels, levels);
+        assert_eq!(from_dds.pixel_data, tex.pixel_data);
+
+        // A DDS written short (the game's sizes, as older exports did) is taken as it is.
+        let mut short = dds_bytes[..128].to_vec();
+        short.extend_from_slice(&tex.pixel_data);
+        assert_eq!(crate::parse_dds(&short).unwrap().pixel_data, tex.pixel_data);
+        // Extra bytes beyond the game's size are dropped on write.
+        let mut long = tex.clone();
+        long.pixel_data.extend_from_slice(&[9; 27]);
+        let bytes = serialize_ytd(&[long]).unwrap();
+        assert_eq!(parse_ytd(&bytes).unwrap()[0].pixel_data, tex.pixel_data);
     }
 
     #[test]

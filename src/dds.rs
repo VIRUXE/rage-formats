@@ -125,10 +125,17 @@ pub fn parse_dds(data: &[u8]) -> Result<YtdTexture> {
     let (width, height, depth, levels) = (width as u16, height as u16, depth as u16, levels as u8);
     let stride = crate::ytd::stride_for(format, width, height);
     let expected = crate::ytd::mip_chain_size(format, width, height, levels) * depth as usize;
+    let game_size = crate::ytd::ytd_chain_size(format, width, height, levels) * depth as usize;
     let body = &data[body_start..];
-    if body.len() < expected {
+    // Whole blocks per level as DirectX lays a DDS out, or the game's own
+    // sizes (levels below one block cut short) as some exports write them.
+    let pixel_data = if body.len() >= expected {
+        crate::ytd::to_ytd_layout(format, width, height, stride, levels, &body[..expected])
+    } else if body.len() >= game_size {
+        body[..game_size].to_vec()
+    } else {
         bail!("DDS pixel data is {} bytes; {}x{} {} with {} mip(s) needs {}", body.len(), width, height, format, levels, expected);
-    }
+    };
 
     Ok(YtdTexture {
         name: String::new(),
@@ -139,7 +146,7 @@ pub fn parse_dds(data: &[u8]) -> Result<YtdTexture> {
         format,
         levels,
         stride,
-        pixel_data: body[..expected].to_vec(),
+        pixel_data,
     })
 }
 
@@ -184,6 +191,7 @@ mod tests {
         dds.truncate(128 + 10);
         let err = parse_dds(&dds).unwrap_err().to_string();
         assert!(err.contains("pixel data is 10 bytes"), "{err}");
+        assert!(err.contains("needs 64"), "{err}");
     }
 
     #[test]

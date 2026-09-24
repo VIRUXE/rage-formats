@@ -4,7 +4,7 @@
 use anyhow::{bail, Result};
 use rusty_dds::{DecodeContent, Dds, EncodeLayout};
 
-use crate::ytd::{full_mip_count, mip_chain_size, stride_for, TextureFormat, YtdTexture};
+use crate::ytd::{full_mip_count, mip_chain_size, stride_for, to_ytd_layout, TextureFormat, YtdTexture};
 
 /// The formats a texture can be encoded to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +132,7 @@ pub fn encode_texture(name: &str, rgba: &[u8], width: u32, height: u32, format: 
         format: tex_format,
         levels,
         stride: stride_for(tex_format, w, h),
-        pixel_data: data[..expected].to_vec(),
+        pixel_data: to_ytd_layout(tex_format, w, h, stride_for(tex_format, w, h), levels, &data[..expected]),
     })
 }
 

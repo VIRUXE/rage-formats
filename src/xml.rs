@@ -9,6 +9,7 @@ use std::fmt::Write;
 
 use anyhow::{Context, Result};
 
+#[cfg(test)]
 use crate::hash::rage_joaat;
 use crate::math::{Vec2, Vec3, Vec4};
 use crate::names::NameTable;

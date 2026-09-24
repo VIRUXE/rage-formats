@@ -39,7 +39,7 @@ pub use hash::rage_joaat;
 pub use math::{Vec2, Vec3, Vec4, Mat4};
 pub use resource::{build_rsc7, build_rsc7_with_flags, pack_pages, rsc7_page_count, PagedLayout, is_fxap, FXAP_MAGIC, build_rsc7_paged, prepare_rsc7, rsc7_flags_for_pages, rsc7_flags_for_size, resource_size_from_flags, resource_version_from_flags,
                    RSC7_MAGIC, RSC8_MAGIC, SYSTEM_BASE, GRAPHICS_BASE};
-pub use ytd::{parse_ytd, serialize_ytd, full_mip_count, level_size, mip_chain_size, stride_for, TextureFormat, YtdTexture, YTD_VERSION};
+pub use ytd::{parse_ytd, serialize_ytd, full_mip_count, level_size, mip_chain_size, stride_for, to_dds_layout, to_ytd_layout, ytd_chain_size, TextureFormat, YtdTexture, YTD_VERSION};
 pub use dds::parse_dds;
 pub use schema::Schema;
 pub use meta_write::{build_meta, Written, META_VERSION};
@@ -65,7 +65,7 @@ pub use pso::{dump_pso, is_pso, parse_pso, PsoFile, PSO_MAGIC};
 pub use meta_schema::{dump_meta, parse_meta, HashSite, MetaFile};
 pub use names::NameTable;
 pub use xml::{from_xml, to_xml};
-pub use json::to_json;
+pub use json::{from_json, to_json};
 pub use ymf::{dump_metadata, dump_ymf, parse_ymf, Dependencies, HashName, HdTxdBinding, ImapDependency, InteriorBounds, Manifest, ManifestFormat, MapDataGroup, MetaContainer};
 pub use texture_utils::decompress_texture;
 #[cfg(feature = "image")]

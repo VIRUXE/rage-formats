@@ -21,10 +21,11 @@ pub fn to_json(value: &MetaValue, names: &NameTable) -> JsonValue {
         MetaValue::U32(v) => JsonValue::from(*v),
         MetaValue::I64(v) => JsonValue::from(*v),
         MetaValue::U64(v) => JsonValue::from(*v),
-        MetaValue::F32(v) => JsonValue::from(*v),
-        MetaValue::Vec2(v) => json::array![v.x, v.y],
-        MetaValue::Vec3(v) => json::array![v.x, v.y, v.z],
-        MetaValue::Vec4(v) => json::array![v.x, v.y, v.z, v.w],
+        // Through f64: the json crate stores an f32 with fewer digits than it has.
+        MetaValue::F32(v) => JsonValue::from(*v as f64),
+        MetaValue::Vec2(v) => json::array![v.x as f64, v.y as f64],
+        MetaValue::Vec3(v) => json::array![v.x as f64, v.y as f64, v.z as f64],
+        MetaValue::Vec4(v) => json::array![v.x as f64, v.y as f64, v.z as f64, v.w as f64],
         MetaValue::Hash(h) => {
             if *h == 0 {
                 JsonValue::Null
@@ -51,6 +52,59 @@ pub fn to_json(value: &MetaValue, names: &NameTable) -> JsonValue {
                 obj.insert(&names.resolve(*hash), to_json(v, names));
             }
             JsonValue::Object(obj)
+        }
+    }
+}
+
+/// The inverse of [`to_json`], without a schema: objects with a `$type`
+/// become structures (names or `hash_XXXXXXXX` hashed), other objects
+/// with `value`/`flags` become flag sets, arrays of `{key, value}` objects
+/// become maps, numbers become integers or floats, strings stay strings
+/// (a writer hashes them where a name is expected).
+pub fn from_json(text: &str) -> anyhow::Result<MetaValue> {
+    let parsed = json::parse(text).map_err(|e| anyhow::anyhow!("malformed JSON: {e}"))?;
+    Ok(value_of(&parsed))
+}
+
+fn value_of(v: &JsonValue) -> MetaValue {
+    use crate::coerce::hash_of_str;
+    use crate::value::{MetaArray, MetaStruct};
+    match v {
+        JsonValue::Null => MetaValue::Null,
+        JsonValue::Boolean(b) => MetaValue::Bool(*b),
+        JsonValue::Number(_) => {
+            if let Some(i) = v.as_i64() {
+                match i32::try_from(i) {
+                    Ok(i) => MetaValue::I32(i),
+                    Err(_) => MetaValue::I64(i),
+                }
+            } else if let Some(u) = v.as_u64() {
+                MetaValue::U64(u)
+            } else {
+                MetaValue::F32(v.as_f64().unwrap_or(0.0) as f32)
+            }
+        }
+        JsonValue::Short(_) | JsonValue::String(_) => MetaValue::Str(v.as_str().unwrap_or("").to_owned()),
+        JsonValue::Array(items) => {
+            let is_pair = |i: &JsonValue| i.is_object() && i.len() == 2 && i.has_key("key") && i.has_key("value");
+            if !items.is_empty() && items.iter().all(is_pair) {
+                return MetaValue::Map(items.iter().map(|p| (value_of(&p["key"]), value_of(&p["value"]))).collect());
+            }
+            let typed_items = items.iter().any(|i| i.is_object() && i.has_key("$type"));
+            MetaValue::Array(MetaArray { item_type: None, typed_items, items: items.iter().map(value_of).collect() })
+        }
+        JsonValue::Object(obj) => {
+            if let Some(ty) = obj.get("$type").and_then(|t| t.as_str()) {
+                let fields = obj.iter().filter(|(k, _)| *k != "$type").map(|(k, v)| (hash_of_str(k), value_of(v))).collect();
+                return MetaValue::Struct(MetaStruct { type_hash: hash_of_str(ty), fields });
+            }
+            if obj.len() == 2 && obj.get("value").is_some() && obj.get("flags").is_some() {
+                let bits = obj.get("value").and_then(|b| b.as_u32()).unwrap_or(0);
+                return MetaValue::Flags { enum_hash: 0, bits, names: Vec::new() };
+            }
+            // A structure whose type the member's schema will supply.
+            let fields = obj.iter().map(|(k, v)| (hash_of_str(k), value_of(v))).collect();
+            MetaValue::Struct(MetaStruct { type_hash: 0, fields })
         }
     }
 }
