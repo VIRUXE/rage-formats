@@ -1,7 +1,7 @@
 //! RAGE resource formats: the RSC7-wrapped files GTA V streams — textures
 //! (`.ytd`), drawables (`.ydr`/`.ydd`), fragments (`.yft`), archetype and
 //! ped metadata (`.ytyp`/`.ymt`), texture-dictionary relationships
-//! (`gtxd.ymt`) — parsed from bytes into plain Rust structs. Getting those
+//! (`gtxd.ymt`), the world cache (`cache_y.dat`) — parsed from bytes into plain Rust structs. Getting those
 //! bytes out of an `.rpf` is the `rpf-archive` crate's job; drawing them is
 //! `rage-render`'s.
 
@@ -18,6 +18,7 @@ pub mod gtxd;
 pub mod ybn;
 pub mod ymap;
 pub mod ynv;
+pub mod cache_dat;
 pub mod value;
 pub mod pso;
 pub mod meta_schema;
@@ -60,6 +61,7 @@ pub use ymap::{parse_ymap, parse_ymap_entities, parse_ymap_header, parse_ymap_ml
 pub use ybn::{parse_ybn, Bound, BoundGeometry, BoundKind, BoundTransform, BoundTriangle, Triangle, Ybn};
 pub use ynv::{parse_ynv, serialize_ynv, cell_bounds, cell_file_name, cell_for_position, NavEdge, NavEdgeEnd, NavPoint,
               NavPoly, NavPortal, Ynv, ADJACENT_NONE};
+pub use cache_dat::{parse_cache_dat, BoundsStoreItem, CacheDat, CacheFileDate, InteriorProxy, MapDataNode};
 pub use value::{MetaArray, MetaDump, MetaStruct, MetaValue};
 pub use pso::{dump_pso, is_pso, parse_pso, PsoFile, PSO_MAGIC};
 pub use meta_schema::{dump_meta, parse_meta, HashSite, MetaFile};

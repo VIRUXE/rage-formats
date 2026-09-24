@@ -32,6 +32,7 @@ rage-formats = "0.2"
 | any Meta file (`ytyp`, `ymap`, `ymt`) | yes | | `dump_meta`, `to_xml`, `to_json` | the whole file as a `MetaValue` tree from its own schema, with names from `NameTable` |
 | any PSO file (`ymf`, `pso`, `ymt`) | yes | | `dump_pso`, `to_xml`, `to_json` | the same tree from the big-endian container |
 | `gtxd.ymt` / `gtxd.meta` | yes | | `parse_txd_relationships` | texture dictionary parent chain |
+| `cache_y.dat` world cache | yes | | `parse_cache_dat` | `CacheDat`: every map file's parent and extents, every placed interior (archetype, placing map, position, rotation, box), every collision file's bounds |
 | RSC7 container | yes | yes | `prepare_rsc7`, `build_rsc7`, `build_rsc7_paged` | sections in, a valid file out; `is_fxap` names an escrowed FiveM asset instead |
 
 Hashing is `rage_joaat`, the Jenkins one-at-a-time every name in these
@@ -212,6 +213,26 @@ for dep in &manifest.imap_dependencies_2 {
     println!("{} needs {:?}", dep.name, dep.ityp_deps);  // names print as text when the file had it, else hash_XXXXXXXX
 }
 ```
+
+### World cache
+
+`gta5_cache_y.dat` (in `update.rpf/common/data`) and each DLC pack's
+`x64/data/cacheloaderdata_dlc/*_cache_y.dat` are what the game reads
+instead of opening every map file: which map places which interior, and
+every map's extents.
+
+```rust
+use rage_formats::parse_cache_dat;
+
+let cache = parse_cache_dat(&bytes)?;
+for interior in &cache.interior_proxies {
+    println!("{:#010x} placed by map {:#010x} at {:?}", interior.name, interior.parent, interior.position);
+}
+println!("{} maps, {} collision files", cache.map_nodes.len(), cache.bounds.len());
+```
+
+Maps loaded by script (heist apartments, some story interiors) are in no
+cache file, so a complete list of placements still has to read those maps.
 
 ### Any Meta or PSO file, as XML or JSON
 

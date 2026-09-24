@@ -1,6 +1,6 @@
 [package]
 name = "rage-formats"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "Parsers (and writers) for RAGE resource formats — RSC7 textures, drawables, fragments, meta/PSO data, collision and navmeshes — as found inside GTA V RPF archives"
 license = "Unlicense"
