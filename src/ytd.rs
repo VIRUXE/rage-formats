@@ -2,7 +2,7 @@
 ///
 /// Accepts the standalone RSC7 bytes as returned by `RpfArchive::extract_entry`.
 use anyhow::{Result, Context};
-use crate::resource::{ResReader, prepare_rsc7, u16_le, u32_le, u64_le, SYSTEM_BASE};
+use crate::resource::{ResReader, prepare_rsc7, prepare_rsc7_system, u16_le, u32_le, u64_le, SYSTEM_BASE};
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -291,7 +291,21 @@ pub fn parse_ytd(data: &[u8]) -> Result<Vec<YtdTexture>> {
     parse_texture_dict_at(&reader, SYSTEM_BASE)
 }
 
+/// Every texture's header (name, size, format, mip count) without its pixels:
+/// only the system section is inflated, so this costs a small fraction of
+/// `parse_ytd` on a real dictionary. `pixel_data` is always empty.
+pub fn parse_ytd_headers(data: &[u8]) -> Result<Vec<YtdTexture>> {
+    let system = prepare_rsc7_system(data)?;
+    let reader = ResReader { system: &system, graphics: &[] };
+    parse_texture_dict_with(&reader, SYSTEM_BASE, false)
+}
+
 pub(crate) fn parse_texture_dict_at(reader: &ResReader<'_>, va: u64) -> Result<Vec<YtdTexture>> {
+    parse_texture_dict_with(reader, va, true)
+}
+
+/// A texture dictionary's entries, with their pixel data only when `with_pixels`.
+pub(crate) fn parse_texture_dict_with(reader: &ResReader<'_>, va: u64, with_pixels: bool) -> Result<Vec<YtdTexture>> {
     let dict = reader.resolve(va, 0x40)
         .ok_or_else(|| anyhow::anyhow!("system section too small for TextureDictionary"))?;
 
@@ -323,7 +337,7 @@ pub(crate) fn parse_texture_dict_at(reader: &ResReader<'_>, va: u64) -> Result<V
             .map(|b| u32_le(b, 0))
             .unwrap_or(0);
 
-        match parse_texture(tex_va, name_hash, reader) {
+        match parse_texture(tex_va, name_hash, reader, with_pixels) {
             Ok(tex) => textures.push(tex),
             Err(e) => eprintln!("[YTD] Warning: texture {} parse error: {}", i, e),
         }
@@ -332,7 +346,7 @@ pub(crate) fn parse_texture_dict_at(reader: &ResReader<'_>, va: u64) -> Result<V
     Ok(textures)
 }
 
-fn parse_texture(tex_va: u64, name_hash: u32, reader: &ResReader<'_>) -> Result<YtdTexture> {
+fn parse_texture(tex_va: u64, name_hash: u32, reader: &ResReader<'_>, with_pixels: bool) -> Result<YtdTexture> {
     let raw = reader.resolve(tex_va, 0x90)
         .with_context(|| format!("texture struct out of bounds (va=0x{:X})", tex_va))?;
 
@@ -348,7 +362,7 @@ fn parse_texture(tex_va: u64, name_hash: u32, reader: &ResReader<'_>) -> Result<
     let name = reader.string_at(name_ptr).unwrap_or_default();
     let pixel_size = calc_pixel_data_size(stride, height, levels);
 
-    let pixel_data = if pixel_size > 0 && data_ptr != 0 {
+    let pixel_data = if with_pixels && pixel_size > 0 && data_ptr != 0 {
         reader.resolve(data_ptr, pixel_size)
             .with_context(|| format!("pixel data out of bounds (va=0x{:X}, size={})", data_ptr, pixel_size))?
             .to_vec()
@@ -579,6 +593,20 @@ mod tests {
         long.pixel_data.extend_from_slice(&[9; 27]);
         let bytes = serialize_ytd(&[long]).unwrap();
         assert_eq!(parse_ytd(&bytes).unwrap()[0].pixel_data, tex.pixel_data);
+    }
+
+    #[test]
+    fn headers_match_the_full_parse_without_pixels() {
+        let textures = vec![tex("a_diff", TextureFormat::DXT1, 64, 32), tex("b_n", TextureFormat::A8R8G8B8, 16, 16)];
+        let bytes = serialize_ytd(&textures).unwrap();
+        let full = parse_ytd(&bytes).unwrap();
+        let heads = parse_ytd_headers(&bytes).unwrap();
+        assert_eq!(heads.len(), full.len());
+        for (h, f) in heads.iter().zip(&full) {
+            assert_eq!((h.name.as_str(), h.name_hash, h.width, h.height, h.depth, h.levels, h.stride, h.format),
+                       (f.name.as_str(), f.name_hash, f.width, f.height, f.depth, f.levels, f.stride, f.format));
+            assert!(h.pixel_data.is_empty());
+        }
     }
 
     #[test]

@@ -232,6 +232,45 @@ pub fn prepare_rsc7(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     Ok((system, graphics))
 }
 
+/// Like `prepare_rsc7`, but inflates only the system section and stops there.
+///
+/// The system section holds every struct, name and pointer; the graphics
+/// section holds vertex, index and pixel data, which is usually the bulk of
+/// the file. Readers that only want metadata (texture sizes and formats, for
+/// instance) can skip inflating it entirely: deflate is a stream, and the
+/// system section comes first, so reading `system size` bytes and dropping the
+/// decoder never touches the rest.
+pub fn prepare_rsc7_system(data: &[u8]) -> Result<Vec<u8>> {
+    if data.len() < 16 {
+        bail!("RSC7 data too short");
+    }
+    let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    if magic != RSC7_MAGIC {
+        bail!("Not an RSC7 file (magic = 0x{:08X})", magic);
+    }
+    let system_flags = u32::from_le_bytes(data[8..12].try_into().unwrap());
+    let sys_size = resource_size_from_flags(system_flags);
+    let body = &data[16..];
+
+    // Same stored-vs-deflated rule as `prepare_rsc7`: a stream that never
+    // looked like deflate is stored; one that fails part-way is corrupt.
+    let mut out = Vec::with_capacity(sys_size);
+    let system = match DeflateDecoder::new(body).take(sys_size as u64).read_to_end(&mut out) {
+        Ok(_) if !out.is_empty() => out,
+        Ok(_) => body[..sys_size.min(body.len())].to_vec(),
+        Err(_) if out.is_empty() => body[..sys_size.min(body.len())].to_vec(),
+        Err(_) => bail!(
+            "corrupt deflate stream: inflated {} of an expected {} system bytes before failing",
+            out.len(),
+            sys_size
+        ),
+    };
+    if system.len() < sys_size {
+        bail!("Decompressed size {} < expected system size {}", system.len(), sys_size);
+    }
+    Ok(system)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
