@@ -351,10 +351,15 @@ impl<'s> Builder<'s> {
             }};
         }
         match elem.ty {
-            T_STRUCT if elem.ref_key == SOA_VECTOR => scalars!(B_VECTOR4, 16, |i, at, run| {
-                let a = coerce::vec_of(i, 3)?;
-                for (k, f) in a.iter().take(3).enumerate() { put_f32(run, at + k * 4, *f); }
-            }),
+            // Packed 12-byte `FloatXYZ` structures (the LOD light arrays),
+            // in a block of that name as CodeWalker writes them.
+            T_STRUCT if elem.ref_key == SOA_VECTOR => {
+                self.use_struct(SOA_VECTOR);
+                scalars!(SOA_VECTOR, 12, |i, at, run| {
+                    let a = coerce::vec_of(i, 3)?;
+                    for (k, f) in a.iter().take(3).enumerate() { put_f32(run, at + k * 4, *f); }
+                })
+            }
             T_STRUCT => {
                 let Some(def) = self.schema.meta_structs.get(&elem.ref_key).cloned() else {
                     self.warn(format!("{name}: no schema for element structure {:#010x}", elem.ref_key));
@@ -619,6 +624,57 @@ mod tests {
         let ymap = crate::parse_ymap(&written.bytes).unwrap();
         assert_eq!(ymap.entities.len(), 2);
         assert_eq!(ymap.header.name_hash, j("casas_praia_extras"));
+    }
+
+    #[test]
+    fn occluders_read_back_as_structures() {
+        // `boxOccluders` and `occludeModels` are the two arrays whose entry
+        // carries 4 in its unknown byte; their items are inline structures
+        // all the same, not pointers.
+        let mut root = sample_ymap();
+        let MetaValue::Struct(map) = &mut root else { unreachable!() };
+        let s16 = |v: i16| MetaValue::I16(v);
+        let occluder = st("BoxOccluder", vec![("iCenterX", s16(40)), ("iCenterY", s16(-8)), ("iCenterZ", s16(12)), ("iCosZ", s16(0)), ("iLength", s16(16)), ("iWidth", s16(8)), ("iHeight", s16(4)), ("iSinZ", s16(0))]);
+        let model = st("OccludeModel", vec![
+            ("bmin", MetaValue::Vec3(crate::Vec3::new(1.0, 2.0, 3.0))),
+            ("bmax", MetaValue::Vec3(crate::Vec3::new(4.0, 5.0, 6.0))),
+            ("dataSize", MetaValue::U32(8)),
+            ("verts", MetaValue::Bytes(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+            ("numVertsInBytes", MetaValue::U16(8)),
+            ("numTris", MetaValue::U16(0)),
+            ("flags", MetaValue::U32(0)),
+        ]);
+        map.fields.push((j("boxOccluders"), MetaValue::Array(MetaArray { item_type: Some(j("BoxOccluder")), typed_items: false, items: vec![occluder.clone(), occluder] })));
+        map.fields.push((j("occludeModels"), MetaValue::Array(MetaArray { item_type: Some(j("OccludeModel")), typed_items: false, items: vec![model] })));
+        let written = build_meta(&root, Schema::builtin()).unwrap();
+        assert!(written.warnings.is_empty(), "{:?}", written.warnings);
+        let dump = dump_meta(&written.bytes).unwrap();
+        assert!(dump.warnings.is_empty(), "{:?}", dump.warnings);
+        let map = dump.root.as_struct().unwrap();
+        let boxes = map.field("boxOccluders").unwrap().items();
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[1].as_struct().unwrap().field("iCenterX").and_then(MetaValue::as_i64), Some(40));
+        let models = map.field("occludeModels").unwrap().items();
+        let m = models[0].as_struct().unwrap();
+        assert_eq!(m.field("bmax"), Some(&MetaValue::Vec3(crate::Vec3::new(4.0, 5.0, 6.0))));
+        assert_eq!(m.field("verts"), Some(&MetaValue::Bytes(vec![1, 2, 3, 4, 5, 6, 7, 8])));
+    }
+
+    #[test]
+    fn distant_light_positions_are_packed_twelve_bytes_apart() {
+        let mut root = sample_ymap();
+        let MetaValue::Struct(map) = &mut root else { unreachable!() };
+        let positions: Vec<MetaValue> = (0..3).map(|i| MetaValue::Vec3(crate::Vec3::new(i as f32, 10.0 + i as f32, 20.0 + i as f32))).collect();
+        map.fields.push((j("DistantLODLightsSOA"), st("CDistantLODLight", vec![("position", array(positions.clone())), ("RGBI", array(vec![MetaValue::U32(1); 3])), ("numStreetLights", MetaValue::U16(0)), ("category", MetaValue::U16(0))])));
+        let written = build_meta(&root, Schema::builtin()).unwrap();
+        assert!(written.warnings.is_empty(), "{:?}", written.warnings);
+        let file = parse_meta(&written.bytes).unwrap();
+        let block = file.blocks.iter().find(|b| b.name_hash == SOA_VECTOR).expect("a FloatXYZ block");
+        let f = |at: usize| f32::from_le_bytes(block.data[at..at + 4].try_into().unwrap());
+        assert_eq!((f(12), f(16), f(20)), (1.0, 11.0, 21.0));
+        let dump = dump_meta(&written.bytes).unwrap();
+        let soa = dump.root.as_struct().unwrap().field("DistantLODLightsSOA").unwrap().as_struct().unwrap();
+        assert_eq!(soa.field("position").unwrap().items(), positions.as_slice());
     }
 
     #[test]

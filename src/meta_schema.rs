@@ -411,7 +411,10 @@ impl Walker<'_> {
                 let b = need!(16);
                 let raw = u64_le(b, 0);
                 let count = u16_le(b, 8) as usize;
-                let pointer_items = entry.unknown == 4 || elem.type_byte == MetaType::StructurePointer as u8;
+                // The element type alone says whether items are pointers:
+                // `boxOccluders`/`occludeModels` carry 4 in the entry's
+                // unknown byte and still hold inline structures.
+                let pointer_items = elem.type_byte == MetaType::StructurePointer as u8;
                 let item_type = ((elem.type_byte == MetaType::Structure as u8 || pointer_items) && elem.ref_key != 0 && elem.ref_key != SOA_VECTOR).then_some(elem.ref_key);
                 let Some((bi, bo)) = decode_meta_pointer(raw) else {
                     return MetaValue::Array(MetaArray { item_type, typed_items: pointer_items, items: Vec::new() });
@@ -468,7 +471,8 @@ impl Walker<'_> {
             // Vector3 elements are stored with vec4 alignment.
             MetaType::Vec3 | MetaType::Vec4 | MetaType::CharPointer | MetaType::Array => 16,
             MetaType::StructurePointer | MetaType::DataBlockPointer => 8,
-            MetaType::Structure if ref_key == SOA_VECTOR => 16,
+            // `FloatXYZ`: three packed floats.
+            MetaType::Structure if ref_key == SOA_VECTOR => 12,
             MetaType::Structure => self.file.structs.get(&ref_key).map_or(0, |s| s.size.max(0) as usize),
             MetaType::CharArray | MetaType::ByteArray => ref_key.max(1) as usize,
         };
@@ -650,8 +654,8 @@ pub mod tests {
         entry(root_entries + 16, rage_joaat("flags"), 12, MetaType::IntFlags1, 0, 0, rage_joaat(FLAGS_ENUM));
         entry(root_entries + 32, rage_joaat("origin"), 16, MetaType::Vec3, 0, 0, 0);
         entry(root_entries + 48, rage_joaat("label"), 32, MetaType::CharPointer, 0, 0, 0);
-        entry(root_entries + 64, ARRAYINFO, 0, MetaType::Structure, 0, 0, rage_joaat(ENTITY));
-        entry(root_entries + 80, rage_joaat("entities"), 48, MetaType::Array, 4, 4, 0);
+        entry(root_entries + 64, ARRAYINFO, 0, MetaType::StructurePointer, 0, 0, rage_joaat(ENTITY));
+        entry(root_entries + 80, rage_joaat("entities"), 48, MetaType::Array, 0, 4, 0);
         entry(root_entries + 96, rage_joaat("count"), 64, MetaType::UnsignedInt, 0, 0, 0);
         // entity: archetype Hash @0, position Vec3 @16, kind ByteEnum @4.
         entry(entity_entries, rage_joaat("archetype"), 0, MetaType::Hash, 0, 0, 0);
