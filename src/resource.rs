@@ -249,9 +249,15 @@ pub fn prepare_rsc7_system(data: &[u8]) -> Result<Vec<u8>> {
         bail!("Not an RSC7 file (magic = 0x{:08X})", magic);
     }
     let system_flags = u32::from_le_bytes(data[8..12].try_into().unwrap());
-    let sys_size = resource_size_from_flags(system_flags);
-    let body = &data[16..];
+    inflate_rsc7_system(&data[16..], system_flags)
+}
 
+/// The system section of an RSC7 body (the bytes after the 16-byte header),
+/// given the header's system flags. Inflates no further than the system
+/// section, so a caller holding the body as a memory-mapped slice never
+/// touches the graphics pages behind it.
+pub fn inflate_rsc7_system(body: &[u8], system_flags: u32) -> Result<Vec<u8>> {
+    let sys_size = resource_size_from_flags(system_flags);
     // Same stored-vs-deflated rule as `prepare_rsc7`: a stream that never
     // looked like deflate is stored; one that fails part-way is corrupt.
     let mut out = Vec::with_capacity(sys_size);

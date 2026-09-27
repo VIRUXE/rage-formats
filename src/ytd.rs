@@ -295,8 +295,13 @@ pub fn parse_ytd(data: &[u8]) -> Result<Vec<YtdTexture>> {
 /// only the system section is inflated, so this costs a small fraction of
 /// `parse_ytd` on a real dictionary. `pixel_data` is always empty.
 pub fn parse_ytd_headers(data: &[u8]) -> Result<Vec<YtdTexture>> {
-    let system = prepare_rsc7_system(data)?;
-    let reader = ResReader { system: &system, graphics: &[] };
+    parse_ytd_system(&prepare_rsc7_system(data)?)
+}
+
+/// `parse_ytd_headers` for a system section already inflated (see
+/// `inflate_rsc7_system`).
+pub fn parse_ytd_system(system: &[u8]) -> Result<Vec<YtdTexture>> {
+    let reader = ResReader { system, graphics: &[] };
     parse_texture_dict_with(&reader, SYSTEM_BASE, false)
 }
 
