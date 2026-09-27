@@ -242,7 +242,10 @@ impl<'s> Builder<'s> {
             T_STRUCT => {
                 let inner = match v {
                     MetaValue::Struct(s) => Some(s),
+                    // An empty element (`<instancedData/>`) reads back from
+                    // XML as empty text: an all-default structure.
                     MetaValue::Null => None,
+                    MetaValue::Str(s) if s.is_empty() => None,
                     _ => bad!(),
                 };
                 if e.subtype == 0 {

@@ -305,7 +305,10 @@ impl<'s> Builder<'s> {
                 need!(def.size as usize);
                 let inner = match v {
                     MetaValue::Struct(s) => Some(s),
+                    // An empty element (`<instancedData/>`) reads back from
+                    // XML as empty text: an all-default structure.
                     MetaValue::Null => None,
+                    MetaValue::Str(s) if s.is_empty() => None,
                     _ => bad!(),
                 };
                 let bytes = self.write_struct(&def, inner);
@@ -675,6 +678,13 @@ mod tests {
         let dump = dump_meta(&written.bytes).unwrap();
         let soa = dump.root.as_struct().unwrap().field("DistantLODLightsSOA").unwrap().as_struct().unwrap();
         assert_eq!(soa.field("position").unwrap().items(), positions.as_slice());
+    }
+
+    #[test]
+    fn an_empty_element_writes_an_empty_structure_quietly() {
+        let text = "<CMapData><name>m</name><instancedData/></CMapData>";
+        let written = build_meta(&from_xml(text).unwrap(), Schema::builtin()).unwrap();
+        assert!(written.warnings.is_empty(), "{:?}", written.warnings);
     }
 
     #[test]
