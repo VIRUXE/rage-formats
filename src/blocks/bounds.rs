@@ -97,11 +97,11 @@ fn norm(v: Vec3) -> Vec3 {
     if len > 1e-6 { v * (1.0 / len) } else { v }
 }
 /// `Vector3.Min`/`Max` as SharpDX writes them (`a < b ? a : b`).
-fn vmin(a: Vec3, b: Vec3) -> Vec3 {
+pub(super) fn vmin(a: Vec3, b: Vec3) -> Vec3 {
     let m = |a: f32, b: f32| if a < b { a } else { b };
     Vec3::new(m(a.x, b.x), m(a.y, b.y), m(a.z, b.z))
 }
-fn vmax(a: Vec3, b: Vec3) -> Vec3 {
+pub(super) fn vmax(a: Vec3, b: Vec3) -> Vec3 {
     let m = |a: f32, b: f32| if a > b { a } else { b };
     Vec3::new(m(a.x, b.x), m(a.y, b.y), m(a.z, b.z))
 }
