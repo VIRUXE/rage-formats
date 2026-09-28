@@ -68,3 +68,27 @@ fn several_geometries_bone_ids_and_lods_round_trip() {
     let (mut g2, root2) = read_ydr(&ydr).unwrap();
     assert_eq!(rage_formats::blocks::ydr::write_ydr(&mut g2, root2).unwrap(), ydr);
 }
+
+#[test]
+fn a_drawable_carries_its_bound() {
+    let xml = XML.replace("</DrawableModelsHigh>\n", &format!("</DrawableModelsHigh>\n{}", include_str!("fixtures/box_bounds_fragment.xml")));
+    assert_ne!(xml, XML);
+    let ydr = build_ydr_from_xml(&xml, None).unwrap();
+    assert_eq!(dump_ydr_xml(&ydr, &NameTable::core(), None).unwrap(), xml);
+    let (mut g, root) = read_ydr(&ydr).unwrap();
+    let d = g.get::<Drawable>(root);
+    let bound = d.bound.expect("the bound pointer is read");
+    assert!(matches!(g.get::<rage_formats::blocks::bounds::BoundBlock>(bound), rage_formats::blocks::bounds::BoundBlock::Box(_)));
+    assert!(g.get::<rage_formats::blocks::bounds::BoundBlock>(bound).common().pages.is_none(), "only the drawable root owns pages");
+    assert_eq!(rage_formats::blocks::ydr::write_ydr(&mut g, root).unwrap(), ydr);
+    assert_eq!(rage_formats::parse_ydr(&ydr).unwrap().triangle_count(rage_formats::parse_ydr(&ydr).unwrap().best_lod().unwrap()), 1);
+}
+
+#[test]
+fn a_drawable_with_a_none_bound_has_none() {
+    let xml = XML.replace("</DrawableModelsHigh>\n", "</DrawableModelsHigh>\n  <Bounds type=\"None\" />\n");
+    let ydr = build_ydr_from_xml(&xml, None).unwrap();
+    let (g, root) = read_ydr(&ydr).unwrap();
+    assert!(g.get::<Drawable>(root).bound.is_none());
+    assert_eq!(dump_ydr_xml(&ydr, &NameTable::core(), None).unwrap(), XML);
+}

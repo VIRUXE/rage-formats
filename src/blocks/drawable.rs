@@ -12,6 +12,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use super::bounds::BoundBlock;
 use super::base::{read_pages_info, read_simple_list64, read_string_block, read_struct_array, write_file_base, write_simple_list64, PagesInfo, StringBlock, StructArray};
 use super::light::Light;
 use super::shader::ShaderGroup;
@@ -413,7 +414,7 @@ pub struct Drawable {
     /// A `StructArray<Light>`.
     pub lights: Option<BlockId>,
     pub lights_count: usize,
-    // Task 11: bounds
+    /// A `BoundBlock`; a bound in a drawable has no pages of its own.
     pub bound: Option<BlockId>,
 }
 
@@ -473,7 +474,7 @@ impl Drawable {
                 }
             }
         }
-        // Task 11: bounds (the `Bounds` element goes here, before the lights)
+        if let Some(b) = self.bound { g.get::<BoundBlock>(b).write_xml(x, g, None); }
         if let Some(l) = self.lights {
             let lights = &g.get::<StructArray<Light>>(l).items;
             if !lights.is_empty() { write_items(x, "Lights", lights, |x, l| l.write_xml(x, names)); }
@@ -503,7 +504,7 @@ impl Drawable {
         let lights: Vec<Light> = items(n, "Lights").into_iter().map(Light::read_xml).collect();
         let lights_count = lights.len();
         let lights = if lights.is_empty() { None } else { Some(g.add(StructArray { items: lights })) };
-        // Task 11: bounds (read the `Bounds` element here)
+        let bound = match child(n, "Bounds") { Some(b) => BoundBlock::read_xml(b, g, None)?, None => None };
         let mut d = Drawable {
             vft: 1079456120, pages, shader_group, skeleton, joints,
             bounding_center: child_vec3(n, "BoundingSphereCenter"),
@@ -511,7 +512,7 @@ impl Drawable {
             bounding_box_min: child_vec3(n, "BoundingBoxMin"),
             bounding_box_max: child_vec3(n, "BoundingBoxMax"),
             lod_dist: ["LodDistHigh", "LodDistMed", "LodDistLow", "LodDistVlow"].map(|t| child_attr_f32(n, t, "value")),
-            render_mask_flags: [0; 4], models, name, lights, lights_count, bound: None,
+            render_mask_flags: [0; 4], models, name, lights, lights_count, bound,
         };
         for (lod, tag) in ["FlagsHigh", "FlagsMed", "FlagsLow", "FlagsVlow"].into_iter().enumerate() {
             d.set_flags(lod, child_attr_u32(n, tag, "value") as u8);
@@ -539,7 +540,7 @@ impl Drawable {
         let name_ptr = c.u64();
         let (lights_ptr, lights_count, _) = read_simple_list64(&mut c);
         c.skip(8);
-        let _bound_ptr = c.u64();
+        let bound_ptr = c.u64();
         c.check()?;
 
         let pages = read_pages_info(r, g, pages_ptr)?;
@@ -549,10 +550,10 @@ impl Drawable {
         let models = DrawableModelsBlock::read(r, g, if models_ptr == 0 { lod_ptrs[0] } else { models_ptr }, lod_ptrs)?;
         let name = read_string_block(r, g, name_ptr)?;
         let lights = read_struct_array::<Light>(r, g, lights_ptr, lights_count as usize)?;
-        // Task 11: bounds (read the bound at the bound pointer)
+        let bound = BoundBlock::read(r, g, bound_ptr, None)?;
         let id = g.add(Drawable {
             vft, pages, shader_group, skeleton, joints, bounding_center, bounding_sphere_radius, bounding_box_min, bounding_box_max,
-            lod_dist, render_mask_flags, models, name, lights, lights_count: lights_count as usize, bound: None,
+            lod_dist, render_mask_flags, models, name, lights, lights_count: lights_count as usize, bound,
         });
         r.cache(va, id); Ok(Some(id))
     }
@@ -580,7 +581,6 @@ impl Block for Drawable {
         w.u64(g.ptr(self.name));
         write_simple_list64(w, g, self.lights, lights);
         w.u64(0);
-        // Task 11: bounds
         w.u64(g.ptr(self.bound));
         Ok(())
     }

@@ -6,6 +6,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use super::bounds::BoundBlock;
 use super::drawable::Drawable;
 use super::xml::XmlOut;
 use super::{BlockId, Graph, Reader};
@@ -22,7 +23,8 @@ pub fn read_ydr(file: &[u8]) -> Result<(Graph, BlockId)> {
 
 /// Lays the graph out and writes it as a `.ydr` (resource version 165).
 pub fn write_ydr(g: &mut Graph, root: BlockId) -> Result<Vec<u8>> {
-    let pages = g.get::<Drawable>(root).pages.context("the drawable has no pages info")?;
+    let (pages, bound) = { let d = g.get::<Drawable>(root); (d.pages.context("the drawable has no pages info")?, d.bound) };
+    if let Some(bound) = bound { BoundBlock::prepare_tree(g, bound); }
     g.build(root, pages, 165)
 }
 

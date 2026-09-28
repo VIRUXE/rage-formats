@@ -13,6 +13,7 @@ pub mod skeleton;
 pub mod texture;
 pub mod vertex;
 pub mod xml;
+pub mod ybn;
 pub mod ydr;
 
 use std::any::Any;

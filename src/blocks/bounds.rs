@@ -1314,8 +1314,8 @@ impl BoundBlock {
     }
 
     /// `Bounds.GetType` + `Read`: the kind is the byte at 0x10. A composite parent sets a child's transform
-    /// and flags itself, so `parent` changes nothing here.
-    pub fn read(r: &mut Reader, g: &mut Graph, va: u64, _parent: Option<&CompositeCtx>) -> Result<Option<BlockId>> {
+    /// and flags itself; a composite inside a composite is refused (none exists, and a cycle would never end).
+    pub fn read(r: &mut Reader, g: &mut Graph, va: u64, parent: Option<&CompositeCtx>) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
         if let Some(id) = r.cached(va) { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
@@ -1324,6 +1324,7 @@ impl BoundBlock {
         let kind_byte = c.u8();
         c.check()?;
         let Some(kind) = BoundKind::from_byte(kind_byte) else { bail!("unknown bound type {kind_byte} at {va:#x}") };
+        if kind == BoundKind::Composite && parent.is_some() { bail!("the composite bound at {va:#x} is inside another composite"); }
         // the common fields start at the type byte, 16 bytes in
         let (common, fields, bvh_ptr, composite) = {
             let mut c = r.cursor(va + 16)?;
@@ -1754,6 +1755,40 @@ mod tests {
         assert_eq!((geo.common.box_center, geo.common.sphere_center), (bvh.bb_center.xyz(), bvh.bb_center.xyz()));
         assert_eq!(geo.common.sphere_radius, (geo.common.box_max - geo.common.box_center).length());
         assert_eq!((bvh.nodes_count, bvh.trees_count), (3, 1));
+    }
+
+    #[test]
+    fn a_composite_with_a_bvh_and_a_strip_geometry_read_back_and_rewrite_identically() {
+        use crate::resource::SYSTEM_BASE;
+        let mut g = Graph::new(); let pages = g.add(PagesInfo::default());
+        let mut comp = composite_of_boxes(&mut g, 6);
+        // four triangles over columns 0..2, centred so every vertex is exactly representable at 32767 quanta
+        let mut geo = strip(4);
+        geo.vertices.iter_mut().for_each(|v| *v = *v - Vec3::new(1.0, 0.5, 0.0));
+        geo.center_geom = Vec3::new(1.0, 0.5, 0.0);
+        let gid = g.add(BoundBlock::GeometryBvh(geo));
+        comp.children.push(Some(gid));
+        comp.children.push(None);
+        comp.prepare(&mut g);
+        let root = g.add(BoundBlock::Composite(comp));
+        g.get_mut::<BoundBlock>(root).set_pages(Some(pages));
+        BoundBlock::prepare_tree(&mut g, root);
+        assert_eq!(g.length(root), 176);
+        let file = g.build(root, pages, 43).unwrap();
+
+        let mut r = Reader::open(&file).unwrap(); let mut g2 = Graph::new();
+        let root2 = BoundBlock::read(&mut r, &mut g2, SYSTEM_BASE, None).unwrap().unwrap();
+        let BoundBlock::Composite(c2) = g2.get::<BoundBlock>(root2) else { panic!() };
+        assert_eq!(c2.children.len(), 8);
+        assert!(c2.children[7].is_none());
+        let bvh = g2.get::<Bvh>(c2.bvh.expect("seven children get a BVH"));
+        assert_eq!(bvh.nodes_capacity, 17, "2 * 8 + 1, the null child included");
+        let BoundBlock::Box(b) = g2.get::<BoundBlock>(c2.children[3].unwrap()) else { panic!() };
+        assert_eq!(b.transform.translation(), Vec3::new(0.0, 3.0, 0.0), "each child gets its transform back");
+        let BoundBlock::GeometryBvh(geo2) = g2.get::<BoundBlock>(c2.children[6].unwrap()) else { panic!() };
+        assert!(geo2.bvh.is_some() && geo2.polygons.len() == 4);
+        BoundBlock::prepare_tree(&mut g2, root2);
+        assert!(g2.build(root2, g2.get::<BoundBlock>(root2).common().pages.unwrap(), 43).unwrap() == file, "a read graph rewrites the same file");
     }
 
     impl Polygon {

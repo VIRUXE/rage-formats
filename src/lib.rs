@@ -39,6 +39,7 @@ mod rbf;
 
 pub use hash::rage_joaat;
 pub use blocks::ydr::{read_ydr, write_ydr, dump_ydr_xml, build_ydr_from_xml};
+pub use blocks::ybn::{read_ybn, write_ybn, dump_ybn_xml, build_ybn_from_xml};
 pub use blocks::{Graph, BlockId};
 pub use math::{Vec2, Vec3, Vec4, Mat4};
 pub use resource::{build_rsc7, build_rsc7_with_flags, pack_pages, rsc7_page_count, PagedLayout, is_fxap, FXAP_MAGIC, build_rsc7_paged, prepare_rsc7, rsc7_flags_for_pages, rsc7_flags_for_size, resource_size_from_flags, resource_version_from_flags,
