@@ -46,6 +46,36 @@ impl TextureFormat {
     pub fn is_block_compressed(self) -> bool {
         matches!(self, Self::DXT1 | Self::DXT3 | Self::DXT5 | Self::ATI1 | Self::ATI2 | Self::BC7)
     }
+
+    /// The name CodeWalker's `TextureFormat` enum gives it (`D3DFMT_DXT1`), as its XML spells it.
+    pub fn codewalker_name(self) -> &'static str {
+        match self {
+            Self::A8R8G8B8 => "D3DFMT_A8R8G8B8",
+            Self::X8R8G8B8 => "D3DFMT_X8R8G8B8",
+            Self::A1R5G5B5 => "D3DFMT_A1R5G5B5",
+            Self::A8       => "D3DFMT_A8",
+            Self::A8B8G8R8 => "D3DFMT_A8B8G8R8",
+            Self::L8       => "D3DFMT_L8",
+            Self::DXT1     => "D3DFMT_DXT1",
+            Self::DXT3     => "D3DFMT_DXT3",
+            Self::DXT5     => "D3DFMT_DXT5",
+            Self::ATI1     => "D3DFMT_ATI1",
+            Self::ATI2     => "D3DFMT_ATI2",
+            Self::BC7      => "D3DFMT_BC7",
+            Self::Unknown  => "D3DFMT_UNKNOWN",
+        }
+    }
+
+    /// The inverse of [`TextureFormat::codewalker_name`] (case-insensitive); `None` for any other text.
+    pub fn from_codewalker_name(s: &str) -> Option<Self> {
+        const ALL: [TextureFormat; 12] = [
+            TextureFormat::A8R8G8B8, TextureFormat::X8R8G8B8, TextureFormat::A1R5G5B5, TextureFormat::A8,
+            TextureFormat::A8B8G8R8, TextureFormat::L8, TextureFormat::DXT1, TextureFormat::DXT3,
+            TextureFormat::DXT5, TextureFormat::ATI1, TextureFormat::ATI2, TextureFormat::BC7,
+        ];
+        let s = s.trim();
+        ALL.into_iter().find(|f| f.codewalker_name().eq_ignore_ascii_case(s))
+    }
 }
 
 impl std::fmt::Display for TextureFormat {
@@ -489,8 +519,23 @@ pub fn serialize_ytd(textures: &[YtdTexture]) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A 4x4 DXT1 texture with one mip level and one block of fixed pixel data.
+    pub(crate) fn sample_dxt1_4x4(name: &str) -> YtdTexture {
+        YtdTexture {
+            name: name.into(),
+            name_hash: crate::rage_joaat(name),
+            width: 4,
+            height: 4,
+            depth: 1,
+            format: TextureFormat::DXT1,
+            levels: 1,
+            stride: stride_for(TextureFormat::DXT1, 4, 4),
+            pixel_data: vec![0x1F, 0x00, 0xE0, 0x07, 0x1B, 0x1B, 0x1B, 0x1B],
+        }
+    }
 
     fn tex(name: &str, format: TextureFormat, width: u16, height: u16) -> YtdTexture {
         let levels = full_mip_count(format, width, height);
