@@ -6,6 +6,7 @@
 pub mod base;
 pub mod light;
 pub mod shader;
+pub mod skeleton;
 pub mod texture;
 pub mod vertex;
 pub mod xml;
