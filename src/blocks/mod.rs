@@ -140,20 +140,30 @@ pub struct Reader { sys: Vec<u8>, gfx: Vec<u8>, pool: HashMap<u64, BlockId> }
 impl Reader {
     pub fn open(file: &[u8]) -> Result<Reader> { let (sys, gfx) = prepare_rsc7(file)?; Ok(Reader { sys, gfx, pool: HashMap::new() }) }
     fn section(&self, va: u64) -> Result<(&[u8], u64)> {
-        if va & SYSTEM_BASE == SYSTEM_BASE { Ok((&self.sys, SYSTEM_BASE)) }
-        else if va & GRAPHICS_BASE == GRAPHICS_BASE { Ok((&self.gfx, GRAPHICS_BASE)) }
-        else if va == 0 { bail!("null pointer") } else { bail!("pointer {va:#x} is in neither section") }
+        if va == 0 { bail!("null pointer") }
+        if va >> 32 != 0 { bail!("pointer {va:#x} is in neither section") }
+        match va & 0xF000_0000 {
+            SYSTEM_BASE => Ok((&self.sys, SYSTEM_BASE)),
+            GRAPHICS_BASE => Ok((&self.gfx, GRAPHICS_BASE)),
+            _ => bail!("pointer {va:#x} is in neither section"),
+        }
     }
     pub fn slice(&self, va: u64, len: usize) -> Result<&[u8]> {
         let (d, b) = self.section(va)?; let off = (va - b) as usize;
-        d.get(off..off + len).with_context(|| format!("{len} bytes at {va:#x} run past the section"))
+        let end = off.checked_add(len).with_context(|| format!("{len} bytes at {va:#x} overflow"))?;
+        d.get(off..end).with_context(|| format!("{len} bytes at {va:#x} run past the section"))
     }
     /// A cursor from `va` to the end of its section.
-    pub fn cursor(&self, va: u64) -> Result<Cursor<'_>> { let (d, b) = self.section(va)?; Ok(Cursor { data: d, pos: (va - b) as usize, base: b }) }
+    pub fn cursor(&self, va: u64) -> Result<Cursor<'_>> {
+        let (d, b) = self.section(va)?; let pos = (va - b) as usize;
+        if pos > d.len() { bail!("pointer {va:#x} is outside its section"); }
+        Ok(Cursor { data: d, pos, base: b, overrun: false })
+    }
     /// The NUL-terminated string at `va`; `None` for a null pointer.
     pub fn string(&self, va: u64) -> Result<Option<String>> {
         if va == 0 { return Ok(None); }
         let (d, b) = self.section(va)?; let off = (va - b) as usize;
+        if off > d.len() { bail!("pointer {va:#x} is outside its section"); }
         let end = d[off..].iter().position(|&c| c == 0).map_or(d.len(), |n| off + n);
         Ok(Some(String::from_utf8_lossy(&d[off..end]).into_owned()))
     }
@@ -161,7 +171,8 @@ impl Reader {
     pub fn cache(&mut self, va: u64, id: BlockId) { self.pool.insert(va, id); }
     pub fn structs<T: Pod>(&self, va: u64, count: usize) -> Result<Vec<T>> {
         if va == 0 || count == 0 { return Ok(Vec::new()); }
-        let b = self.slice(va, count * T::SIZE)?;
+        let len = count.checked_mul(T::SIZE).with_context(|| format!("{count} items at {va:#x} overflow"))?;
+        let b = self.slice(va, len)?;
         Ok((0..count).map(|i| T::read(&b[i * T::SIZE..])).collect())
     }
     pub fn u16s(&self, va: u64, n: usize) -> Result<Vec<u16>> { self.structs(va, n) }
@@ -171,9 +182,24 @@ impl Reader {
     pub fn bytes(&self, va: u64, n: usize) -> Result<Vec<u8>> { self.structs(va, n) }
 }
 
-pub struct Cursor<'a> { data: &'a [u8], pub pos: usize, base: u64 }
+static ZEROS: [u8; 64] = [0; 64];
+
+/// A reader over the rest of a section. Reads never panic: one that runs past
+/// the end yields zeros and sets `overrun`, so block readers call [`Cursor::check`]
+/// (`c.check()?`) after reading their fixed fields.
+pub struct Cursor<'a> { data: &'a [u8], pub pos: usize, base: u64, overrun: bool }
 impl<'a> Cursor<'a> {
-    fn take(&mut self, n: usize) -> &'a [u8] { let s = &self.data[self.pos..self.pos + n]; self.pos += n; s }
+    fn take(&mut self, n: usize) -> &'a [u8] {
+        assert!(n <= ZEROS.len());
+        let end = self.pos.checked_add(n).filter(|&e| e <= self.data.len());
+        let s = match end { Some(e) => &self.data[self.pos..e], None => { self.overrun = true; &ZEROS[..n] } };
+        self.pos = self.pos.saturating_add(n);
+        s
+    }
+    /// An error if any read so far ran past the end of the section.
+    pub fn check(&self) -> Result<()> {
+        if self.overrun { bail!("read past the end of the section at {:#x}", self.va()) } else { Ok(()) }
+    }
     pub fn u8(&mut self) -> u8 { self.take(1)[0] }
     pub fn u16(&mut self) -> u16 { u16::read(self.take(2)) }
     pub fn i16(&mut self) -> i16 { i16::read(self.take(2)) }
@@ -265,6 +291,7 @@ mod tests {
         let pages_va = c.u64(); let name_va = c.u64(); let floats_va = c.u64();
         let pi = base::read_pages_info(&mut r, &mut g2, pages_va).unwrap().unwrap();
         assert_eq!(g2.get::<PagesInfo>(pi).system_pages, 1);
+        assert_eq!(g2.get::<PagesInfo>(pi).graphics_pages, 0);
         let s1 = base::read_string_block(&mut r, &mut g2, name_va).unwrap().unwrap();
         let s2 = base::read_string_block(&mut r, &mut g2, name_va).unwrap().unwrap();
         assert_eq!(s1, s2, "the pool returns one block per address");
@@ -272,6 +299,32 @@ mod tests {
         let fa = base::read_struct_array::<f32>(&mut r, &mut g2, floats_va, 2).unwrap().unwrap();
         assert_eq!(g2.get::<StructArray<f32>>(fa).items, vec![1.0, 2.0]);
         assert!(base::read_string_block(&mut r, &mut g2, 0).unwrap().is_none());
+    }
+
+    #[test]
+    fn bad_pointers_are_errors_not_panics() {
+        let mut g = Graph::new();
+        let pages = g.add(PagesInfo::default());
+        let name = g.add(StringBlock("hello".into()));
+        let floats = g.add(StructArray { items: vec![1.0f32, 2.0] });
+        let root = g.add(Root { pages, name, floats });
+        let file = g.build(root, pages, 7).unwrap();
+        let r = Reader::open(&file).unwrap();
+        let (sys, _) = prepare_rsc7(&file).unwrap();
+
+        assert!(r.slice(0, 4).unwrap_err().to_string().contains("null pointer"));
+        assert!(r.slice(0x7000_0000, 4).is_err());
+        assert!(r.slice(0x1_5000_0000, 4).is_err());
+        assert!(r.string(0x7000_0000).is_err());
+        assert!(r.cursor(SYSTEM_BASE + sys.len() as u64 + 16).is_err());
+        assert!(r.string(SYSTEM_BASE + sys.len() as u64 + 16).is_err());
+        assert!(r.slice(SYSTEM_BASE, usize::MAX).is_err());
+        assert!(r.structs::<u64>(SYSTEM_BASE, usize::MAX / 4).is_err());
+
+        let mut c = r.cursor(SYSTEM_BASE + sys.len() as u64 - 2).unwrap();
+        assert!(c.check().is_ok());
+        c.u64();
+        assert!(c.check().unwrap_err().to_string().contains("read past the end"));
     }
 
     #[test]

@@ -75,6 +75,6 @@ pub fn read_pages_info(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<
     if va == 0 { return Ok(None); }
     if let Some(id) = r.cached(va) { return Ok(Some(id)); }
     let mut c = r.cursor(va)?; c.skip(8);
-    let (system_pages, graphics_pages) = (c.u8(), c.u8());
+    let (system_pages, graphics_pages) = (c.u8(), c.u8()); c.check()?;
     let id = g.add(PagesInfo { system_pages, graphics_pages, capacity: 128 }); r.cache(va, id); Ok(Some(id))
 }
