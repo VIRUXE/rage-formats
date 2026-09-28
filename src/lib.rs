@@ -8,6 +8,7 @@
 pub mod hash;
 pub mod math;
 pub mod resource;
+pub mod blocks;
 pub mod vertex;
 pub mod ytd;
 pub mod ydd;

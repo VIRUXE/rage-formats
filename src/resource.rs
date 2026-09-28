@@ -455,8 +455,11 @@ pub struct PagedLayout {
 /// `ResourceBuilder` does. The game maps each page as its own allocation,
 /// so no block may straddle two pages; blocks are placed first-fit into
 /// pages of five sizes (`0x2000 << shift` times 1, 2, 4, 8 and 16), largest
-/// blocks first and 16-byte aligned, and the base shift grows until the
-/// per-size page counts fit the flag word and `max_pages` in total.
+/// blocks first and 16-byte aligned. The base shift starts at the smallest
+/// value where the base page is no smaller than the smallest block and the
+/// biggest page size (16x) holds the largest block
+/// (`ResourceBuilder.cs:363-368`), then grows until the per-size page counts
+/// fit the flag word and `max_pages` in total.
 ///
 /// With `root_first` the first block is placed at offset 0 regardless of
 /// its size, as a resource's root struct must be.
@@ -469,13 +472,14 @@ pub fn pack_pages(sizes: &[usize], root_first: bool, max_pages: usize) -> Result
         return Ok(PagedLayout { flags: 0, offsets: vec![], size: 0 });
     }
     let max_block = *sizes.iter().max().unwrap();
+    let min_block = *sizes.iter().min().unwrap();
     let mut order: Vec<usize> = (0..sizes.len()).collect();
     let sortable = if root_first { &mut order[1..] } else { &mut order[..] };
     sortable.sort_by(|a, b| sizes[*b].cmp(&sizes[*a]));
 
     for shift in 0u32..16 {
         let base = 0x2000usize << shift;
-        if base * 16 < max_block {
+        if base < min_block || base * 16 < max_block {
             continue;
         }
         let mut top = 0;

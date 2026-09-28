@@ -1,0 +1,212 @@
+//! CodeWalker's resource block graph, ported: a resource is an arena of
+//! blocks that point at each other by [`BlockId`]; [`Graph::build`] lays
+//! them into RSC7 pages the way `ResourceBuilder.Build` does and
+//! a reader (later task) reads them back with the same position-keyed block pool.
+
+pub mod base;
+// later tasks add: vertex, texture, shader, light, skeleton, drawable, bounds, bvh, ydr, ybn, xml
+
+use std::any::Any;
+use std::collections::HashSet;
+
+use anyhow::{bail, Context, Result};
+
+use crate::math::{Vec3, Vec4, Mat4};
+use crate::resource::{build_rsc7_with_flags, pack_pages, rsc7_page_count, GRAPHICS_BASE, SYSTEM_BASE};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section { System, Graphics }
+
+pub trait Block: Any {
+    fn length(&self) -> usize;
+    fn section(&self) -> Section { Section::System }
+    fn references(&self, _g: &Graph) -> Vec<BlockId> { Vec::new() }
+    fn parts(&self) -> Vec<(usize, BlockId)> { Vec::new() }
+    fn write(&self, w: &mut Writer, g: &Graph) -> Result<()>;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+#[derive(Default)]
+pub struct Graph { blocks: Vec<Box<dyn Block>>, positions: Vec<u64> }
+
+impl Graph {
+    pub fn new() -> Self { Self::default() }
+    pub fn add<B: Block>(&mut self, b: B) -> BlockId {
+        self.blocks.push(Box::new(b));
+        self.positions.push(0);
+        BlockId(self.blocks.len() as u32 - 1)
+    }
+    pub fn get<B: Block>(&self, id: BlockId) -> &B {
+        self.blocks[id.0 as usize].as_any().downcast_ref().expect("block type")
+    }
+    pub fn get_mut<B: Block>(&mut self, id: BlockId) -> &mut B {
+        self.blocks[id.0 as usize].as_any_mut().downcast_mut().expect("block type")
+    }
+    pub fn length(&self, id: BlockId) -> usize { self.blocks[id.0 as usize].length() }
+    pub fn position(&self, id: BlockId) -> u64 { self.positions[id.0 as usize] }
+    pub fn ptr(&self, id: Option<BlockId>) -> u64 { id.map_or(0, |i| self.position(i)) }
+
+    /// `ResourceBuilder.GetBlocks`: every block reachable through references
+    /// (parts are walked for their references but are not top-level).
+    fn collect(&self, root: BlockId) -> (Vec<BlockId>, Vec<BlockId>) {
+        let (mut sys, mut gfx, mut seen) = (Vec::new(), Vec::new(), HashSet::new());
+        fn add(g: &Graph, id: BlockId, top: bool, sys: &mut Vec<BlockId>, gfx: &mut Vec<BlockId>, seen: &mut HashSet<BlockId>) {
+            let b = &g.blocks[id.0 as usize];
+            if top {
+                if !seen.insert(id) { return; }
+                match b.section() { Section::System => sys.push(id), Section::Graphics => gfx.push(id) }
+            }
+            for r in b.references(g) { add(g, r, true, sys, gfx, seen); }
+            for (_, p) in b.parts() { add(g, p, false, sys, gfx, seen); }
+        }
+        add(self, root, true, &mut sys, &mut gfx, &mut seen);
+        (sys, gfx)
+    }
+
+    fn assign_parts(&mut self, id: BlockId) {
+        let base = self.positions[id.0 as usize];
+        for (off, p) in self.blocks[id.0 as usize].parts() {
+            self.positions[p.0 as usize] = base + off as u64;
+            self.assign_parts(p);
+        }
+    }
+
+    pub fn build(&mut self, root: BlockId, pages_info: BlockId, version: u32) -> Result<Vec<u8>> {
+        let (sys, gfx) = self.collect(root);
+        let sys_sizes: Vec<usize> = sys.iter().map(|&i| self.length(i)).collect();
+        let gfx_sizes: Vec<usize> = gfx.iter().map(|&i| self.length(i)).collect();
+        let sys_layout = pack_pages(&sys_sizes, true, 128)?;
+        let sys_pages = rsc7_page_count(sys_layout.flags);
+        let gfx_layout = pack_pages(&gfx_sizes, false, 128 - sys_pages)?;
+        let gfx_pages = rsc7_page_count(gfx_layout.flags);
+        {
+            let pi = self.get_mut::<base::PagesInfo>(pages_info);
+            pi.system_pages = sys_pages as u8;
+            pi.graphics_pages = gfx_pages as u8;
+        }
+        for (i, &id) in sys.iter().enumerate() { self.positions[id.0 as usize] = SYSTEM_BASE + sys_layout.offsets[i] as u64; }
+        for (i, &id) in gfx.iter().enumerate() { self.positions[id.0 as usize] = GRAPHICS_BASE + gfx_layout.offsets[i] as u64; }
+        for &id in sys.iter().chain(&gfx) { self.assign_parts(id); }
+
+        let mut ws = Writer::new(SYSTEM_BASE, sys_layout.size);
+        let mut wg = Writer::new(GRAPHICS_BASE, gfx_layout.size);
+        for (ids, w) in [(&sys, &mut ws), (&gfx, &mut wg)] {
+            for &id in ids.iter() {
+                let b = &self.blocks[id.0 as usize];
+                let at = self.positions[id.0 as usize];
+                w.seek(at);
+                b.write(w, self).with_context(|| format!("writing block {}", id.0))?;
+                let wrote = (w.position() - at) as usize;
+                if wrote != b.length() { bail!("block {} wrote {wrote} bytes, declared {}", id.0, b.length()); }
+            }
+        }
+        Ok(build_rsc7_with_flags(version, sys_layout.flags, &ws.into_inner(), gfx_layout.flags, &wg.into_inner()))
+    }
+}
+
+pub struct Writer { data: Vec<u8>, base: u64, pos: usize }
+
+impl Writer {
+    pub fn new(base: u64, size: usize) -> Self { Self { data: vec![0; size], base, pos: 0 } }
+    pub fn seek(&mut self, va: u64) { self.pos = (va - self.base) as usize; }
+    pub fn position(&self) -> u64 { self.base + self.pos as u64 }
+    pub fn bytes(&mut self, b: &[u8]) {
+        if self.pos + b.len() > self.data.len() { self.data.resize(self.pos + b.len(), 0); }
+        self.data[self.pos..self.pos + b.len()].copy_from_slice(b);
+        self.pos += b.len();
+    }
+    pub fn zeros(&mut self, n: usize) { let z = vec![0u8; n]; self.bytes(&z); }
+    pub fn u8(&mut self, v: u8) { self.bytes(&[v]); }
+    pub fn u16(&mut self, v: u16) { self.bytes(&v.to_le_bytes()); }
+    pub fn i16(&mut self, v: i16) { self.bytes(&v.to_le_bytes()); }
+    pub fn u32(&mut self, v: u32) { self.bytes(&v.to_le_bytes()); }
+    pub fn u64(&mut self, v: u64) { self.bytes(&v.to_le_bytes()); }
+    pub fn f32(&mut self, v: f32) { self.bytes(&v.to_le_bytes()); }
+    pub fn vec3(&mut self, v: Vec3) { self.f32(v.x); self.f32(v.y); self.f32(v.z); }
+    pub fn vec4(&mut self, v: Vec4) { self.f32(v.x); self.f32(v.y); self.f32(v.z); self.f32(v.w); }
+    /// `writer.WritePadding(16)`: zero bytes up to the next 16-byte boundary of the virtual address.
+    pub fn pad16(&mut self) { let n = (16 - (self.position() % 16)) % 16; self.zeros(n as usize); }
+    pub fn into_inner(self) -> Vec<u8> { self.data }
+}
+
+pub trait Pod: Copy {
+    const SIZE: usize;
+    fn write(&self, w: &mut Writer);
+    fn read(b: &[u8]) -> Self;
+}
+macro_rules! pod_num { ($t:ty, $n:expr) => { impl Pod for $t {
+    const SIZE: usize = $n;
+    fn write(&self, w: &mut Writer) { w.bytes(&self.to_le_bytes()); }
+    fn read(b: &[u8]) -> Self { <$t>::from_le_bytes(b[..$n].try_into().unwrap()) }
+} } }
+pod_num!(u8, 1); pod_num!(u16, 2); pod_num!(i16, 2); pod_num!(u32, 4); pod_num!(u64, 8); pod_num!(f32, 4);
+impl Pod for Vec3 { const SIZE: usize = 12; fn write(&self, w: &mut Writer) { w.vec3(*self) } fn read(b: &[u8]) -> Self { crate::resource::vec3_le(b, 0) } }
+impl Pod for Vec4 { const SIZE: usize = 16; fn write(&self, w: &mut Writer) { w.vec4(*self) } fn read(b: &[u8]) -> Self { crate::resource::vec4_le(b, 0) } }
+impl Pod for Mat4 { const SIZE: usize = 64;
+    fn write(&self, w: &mut Writer) { for r in self.0.chunks(4) { w.vec4(Vec4::new(r[0], r[1], r[2], r[3])) } }
+    fn read(b: &[u8]) -> Self { Mat4(std::array::from_fn(|i| f32::read(&b[i * 4..]))) } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blocks::base::{PagesInfo, StringBlock, StructArray};
+    use crate::resource::{prepare_rsc7, u64_le, SYSTEM_BASE};
+
+    /// A 32-byte root: FileBase(16) + name pointer(8) + floats pointer(8).
+    struct Root { pages: BlockId, name: BlockId, floats: BlockId }
+    impl Block for Root {
+        fn length(&self) -> usize { 32 }
+        fn references(&self, _g: &Graph) -> Vec<BlockId> { vec![self.pages, self.name, self.floats] }
+        fn write(&self, w: &mut Writer, g: &Graph) -> anyhow::Result<()> {
+            base::write_file_base(w, g, 0x1234, Some(self.pages));
+            w.u64(g.position(self.name));
+            w.u64(g.position(self.floats));
+            Ok(())
+        }
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    }
+
+    #[test]
+    fn builds_a_resource_with_resolved_pointers() {
+        let mut g = Graph::new();
+        let pages = g.add(PagesInfo::default());
+        let name = g.add(StringBlock("hello".into()));
+        let floats = g.add(StructArray { items: vec![1.0f32, 2.0] });
+        let root = g.add(Root { pages, name, floats });
+        let file = g.build(root, pages, 7).unwrap();
+        let (sys, gfx) = prepare_rsc7(&file).unwrap();
+        assert!(gfx.is_empty());
+        assert_eq!(&sys[0..4], &0x1234u32.to_le_bytes());
+        let name_va = u64_le(&sys, 16);
+        let off = (name_va - SYSTEM_BASE) as usize;
+        assert_eq!(&sys[off..off + 6], b"hello\0");
+        let floats_va = u64_le(&sys, 24);
+        let off = (floats_va - SYSTEM_BASE) as usize;
+        assert_eq!(f32::from_le_bytes(sys[off + 4..off + 8].try_into().unwrap()), 2.0);
+        // pages info was shrunk to the real counts
+        let pi = (u64_le(&sys, 8) - SYSTEM_BASE) as usize;
+        assert_eq!(sys[pi + 8], 1); // system pages
+        assert_eq!(sys[pi + 9], 0); // graphics pages
+        assert_eq!(g.position(root), SYSTEM_BASE);
+    }
+
+    #[test]
+    fn a_block_writing_the_wrong_length_is_an_error() {
+        struct Bad;
+        impl Block for Bad {
+            fn length(&self) -> usize { 8 }
+            fn write(&self, w: &mut Writer, _g: &Graph) -> anyhow::Result<()> { w.u32(1); Ok(()) }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+        }
+        let mut g = Graph::new();
+        let pages = g.add(PagesInfo::default());
+        let bad = g.add(Bad);
+        assert!(g.build(bad, pages, 1).unwrap_err().to_string().contains("wrote 4 bytes, declared 8"));
+    }
+}
