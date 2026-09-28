@@ -914,14 +914,22 @@ impl Geometry {
             self.update_triangle_areas();
         }
 
+        // The file holds the vertices on the (recomputed) quantum grid; so does the graph from here on, so
+        // that its XML is what the written file reads back as. A file's own quantum need not be
+        // `CalculateQuantum`'s, and `new BoundVertex_s(v / Quantum)` truncates, so a vertex can move by up
+        // to one quantum, as it does in CodeWalker.
         let q = self.quantum;
-        let quantise = |vs: &[Vec3]| vs.iter().map(|&v| BoundVertex::from_vec(v, q)).collect::<Vec<_>>();
-        self.shrunk_block = self.vertices_shrunk.as_ref().map(|v| g.add(StructArray { items: quantise(v) }));
+        let quantise = |vs: &mut Vec<Vec3>| {
+            let items: Vec<BoundVertex> = vs.iter().map(|&v| BoundVertex::from_vec(v, q)).collect();
+            *vs = items.iter().map(|bv| bv.to_vec(q)).collect();
+            StructArray { items }
+        };
+        self.shrunk_block = self.vertices_shrunk.as_mut().map(|v| g.add(quantise(v)));
         self.polygons_block = (!self.polygons.is_empty()).then(|| {
             let data = self.polygons.iter().flat_map(|p| p.to_bytes()).collect();
             g.add(RawBytes { data, section: Section::System })
         });
-        self.vertices_block = (!self.vertices.is_empty()).then(|| g.add(StructArray { items: quantise(&self.vertices) }));
+        self.vertices_block = (!self.vertices.is_empty()).then(|| g.add(quantise(&mut self.vertices)));
         self.vertex_colours_block = (!self.vertex_colours.is_empty()).then(|| g.add(StructArray { items: self.vertex_colours.clone() }));
         let mut mats = self.materials.clone();
         if mats.len() < 4 { mats.resize(4, BoundMaterial::default()); }
