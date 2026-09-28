@@ -52,3 +52,29 @@ pub fn write_simple_list64(w: &mut Writer, g: &Graph, data: Option<BlockId>, cou
 pub fn write_simple_list64b(w: &mut Writer, g: &Graph, data: Option<BlockId>, count: u32, capacity: u32) { w.u64(g.ptr(data)); w.u32(count); w.u32(capacity); }
 /// `ResourcePointerList64<T>` (ResourceBaseTypes.cs:1562): same 16-byte header over a `PointerArray64`.
 pub fn write_pointer_list64(w: &mut Writer, g: &Graph, array: Option<BlockId>, count: usize) { write_simple_list64(w, g, array, count) }
+
+/// `ResourceSimpleList64<T>` header: pointer, count, capacity (4 bytes of padding skipped).
+pub fn read_simple_list64(c: &mut Cursor) -> (u64, u16, u16) { let p = c.u64(); let n = c.u16(); let cap = c.u16(); c.skip(4); (p, n, cap) }
+/// `ResourceSimpleList64b_s<T>` header: pointer, count u32, capacity u32.
+pub fn read_simple_list64b(c: &mut Cursor) -> (u64, u32, u32) { let p = c.u64(); let n = c.u32(); let cap = c.u32(); (p, n, cap) }
+/// The raw pointers of a `ResourcePointerArray64`; the caller resolves each through the pool.
+pub fn read_pointer_array64(r: &mut Reader, _g: &mut Graph, va: u64, n: usize) -> Result<Vec<u64>> { r.u64s(va, n) }
+pub fn read_string_block(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
+    if va == 0 { return Ok(None); }
+    if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+    let s = r.string(va)?.unwrap();
+    let id = g.add(StringBlock(s)); r.cache(va, id); Ok(Some(id))
+}
+pub fn read_struct_array<T: Pod + 'static>(r: &mut Reader, g: &mut Graph, va: u64, n: usize) -> Result<Option<BlockId>> {
+    if va == 0 { return Ok(None); }
+    if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+    let items = r.structs::<T>(va, n)?;
+    let id = g.add(StructArray { items }); r.cache(va, id); Ok(Some(id))
+}
+pub fn read_pages_info(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
+    if va == 0 { return Ok(None); }
+    if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+    let mut c = r.cursor(va)?; c.skip(8);
+    let (system_pages, graphics_pages) = (c.u8(), c.u8());
+    let id = g.add(PagesInfo { system_pages, graphics_pages, capacity: 128 }); r.cache(va, id); Ok(Some(id))
+}
