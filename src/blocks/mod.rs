@@ -4,6 +4,7 @@
 //! [`Reader`] reads them back with `ResourceDataReader`'s position-keyed block pool.
 
 pub mod base;
+pub mod vertex;
 pub mod xml;
 // later tasks add: vertex, texture, shader, light, skeleton, drawable, bounds, bvh, ydr, ybn, xml
 
