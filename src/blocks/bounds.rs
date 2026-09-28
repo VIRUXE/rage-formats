@@ -1,10 +1,10 @@
-//! Collision bounds without the BVH, ported from CodeWalker's `Bounds.cs`:
+//! Collision bounds, ported from CodeWalker's `Bounds.cs`:
 //! `Bounds` (the 112-byte base), `BoundSphere`, `BoundCapsule`, `BoundBox`,
-//! `BoundDisc`, `BoundCylinder`, `BoundCloth`, `BoundGeometry` (304 bytes) and
-//! `BoundBVH` (336 bytes, its BVH pointer stays null until the BVH is ported),
+//! `BoundDisc`, `BoundCylinder`, `BoundCloth`, `BoundGeometry` (304 bytes),
+//! `BoundBVH` (336 bytes; `BuildBVH` reorders the polygons into BVH node order),
+//! `BoundComposite` (176 bytes, with its children's transforms, boxes and flags),
 //! the five `BoundPolygon` kinds, `BoundMaterial_s`, `BoundVertex_s` and
-//! `BoundGeomOctants`. Only the legacy PC layout is handled. Composite bounds
-//! are not ported yet: reading one is an error.
+//! `BoundGeomOctants`. Only the legacy PC layout is handled. The BVH itself is in [`super::bvh`].
 //!
 //! The derived arrays of a geometry (materials, edge indices, triangle areas,
 //! quantum, shrunk vertices, octants) are computed the way `BoundGeometry.ReadXml`
@@ -17,7 +17,8 @@
 
 use anyhow::{bail, Result};
 
-use super::base::{read_pages_info, write_file_base, RawBytes, StructArray};
+use super::base::{read_pages_info, write_file_base, PointerArray64, RawBytes, StructArray};
+use super::bvh::{build_bvh, Bvh, BvhItem};
 use super::xml::{
     attr_i32, attr_str, attr_u32, child, child_attr_f32, child_attr_u32, child_text, child_vec3, float, format_flags, items, parse_flags, raw_f32s,
     raw_rgba, raw_vec3s, write_items, Node, XmlOut,
@@ -147,6 +148,57 @@ fn triangle_area(v1: Vec3, v2: Vec3, v3: Vec3) -> f32 {
     if d1 >= d2 && a1 != 0.0 {
         if d1 >= d3 || a3 == 0.0 { a1 } else { a3 }
     } else if d2 >= d3 || a3 == 0.0 { a2 } else { a3 }
+}
+
+/// `BoundingBox.Transform(Matrix)` as CodeWalker's extension writes it (`Vectors.cs:133`): the box's centre
+/// through the matrix and its half-extent through the matrix of absolute values.
+fn transform_box(min: Vec3, max: Vec3, m: &Mat4) -> (Vec3, Vec3) {
+    let abs = Mat4(m.0.map(f32::abs));
+    let centre = (max + min) * 0.5;
+    let extent = (max - min) * 0.5;
+    let p = m.transform_point(centre);
+    let inv = 1.0 / p.w; // `TransformCoordinate`
+    let ncentre = Vec3::new(p.x * inv, p.y * inv, p.z * inv);
+    let nextent = abs.transform_vector(extent).abs();
+    (ncentre - nextent, ncentre + nextent)
+}
+
+/// `Matrix4F_s` (64 bytes): the matrix's rows without their fourth column, each followed by a flags word.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ChildTransform { m: Mat4, flags: [u32; 4] }
+
+impl Pod for ChildTransform {
+    const SIZE: usize = 64;
+    fn write(&self, w: &mut Writer) { for r in 0..4 { for c in 0..3 { w.f32(self.m.0[r * 4 + c]); } w.u32(self.flags[r]); } }
+    fn read(b: &[u8]) -> Self {
+        let mut m = Mat4::identity();
+        let mut flags = [0u32; 4];
+        for r in 0..4 {
+            for c in 0..3 { m.0[r * 4 + c] = f32::read(&b[(r * 4 + c) * 4..]); }
+            flags[r] = u32::read(&b[(r * 4 + 3) * 4..]);
+        }
+        ChildTransform { m, flags }
+    }
+}
+
+/// `AABB_s` (32 bytes): a child's box; `min.w` and `max.w` carry `float.Epsilon` and the child's margin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Aabb { min: Vec4, max: Vec4 }
+
+impl Pod for Aabb {
+    const SIZE: usize = 32;
+    fn write(&self, w: &mut Writer) { w.vec4(self.min); w.vec4(self.max); }
+    fn read(b: &[u8]) -> Self { Aabb { min: Vec4::read(b), max: Vec4::read(&b[16..]) } }
+}
+
+/// `BoundCompositeChildrenFlags` (8 bytes): `Flags1` and `Flags2`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ChildFlags(u32, u32);
+
+impl Pod for ChildFlags {
+    const SIZE: usize = 8;
+    fn write(&self, w: &mut Writer) { w.u32(self.0); w.u32(self.1); }
+    fn read(b: &[u8]) -> Self { ChildFlags(u32::read(b), u32::read(&b[4..])) }
 }
 
 // ─── materials, vertices, colours ───────────────────────────────────────────
@@ -553,13 +605,15 @@ pub struct Geometry {
     pub vertices: Vec<Vec3>, pub vertices_shrunk: Option<Vec<Vec3>>, pub polygons: Vec<Polygon>,
     pub materials: Vec<BoundMaterial>, pub material_colours: Vec<[u8; 4]>, pub vertex_colours: Vec<[u8; 4]>, pub polygon_material_indices: Vec<u8>,
     pub octants: Option<BlockId>,
-    /// Task 11.
+    /// The `BVH` of a [`BoundBlock::GeometryBvh`]; `prepare` builds it.
     pub bvh: Option<BlockId>,
     pub unknown_82h: u16,
     shrunk_block: Option<BlockId>, polygons_block: Option<BlockId>, vertices_block: Option<BlockId>, vertex_colours_block: Option<BlockId>,
     materials_block: Option<BlockId>, material_colours_block: Option<BlockId>, polygon_materials_block: Option<BlockId>,
     /// Set for a geometry read from a file: `prepare` then keeps its shrunk vertices and octants, as `GetReferences` does.
     keep_derived: bool,
+    /// Set by `prepare`; [`BoundBlock::prepare_tree`] leaves a prepared geometry alone.
+    prepared: bool,
 }
 
 impl Geometry {
@@ -568,7 +622,7 @@ impl Geometry {
             common, quantum: Vec3::ZERO, unknown_9ch: 0.0, center_geom: Vec3::ZERO, unknown_ach: 0.0, vertices: Vec::new(), vertices_shrunk: None,
             polygons: Vec::new(), materials: Vec::new(), material_colours: Vec::new(), vertex_colours: Vec::new(), polygon_material_indices: Vec::new(),
             octants: None, bvh: None, unknown_82h: 0, shrunk_block: None, polygons_block: None, vertices_block: None, vertex_colours_block: None,
-            materials_block: None, material_colours_block: None, polygon_materials_block: None, keep_derived: false,
+            materials_block: None, material_colours_block: None, polygon_materials_block: None, keep_derived: false, prepared: false,
         }
     }
 
@@ -851,6 +905,14 @@ impl Geometry {
             self.calculate_verts_shrunk();
             self.octants = (self.common.kind == BoundKind::Geometry).then(|| { let o = self.calculate_octants(); g.add(o) });
         }
+        if self.common.kind == BoundKind::GeometryBvh {
+            // `BoundBVH.GetReferences`: `BuildBVH(false)`, then the base's steps again on the reordered polygons
+            self.rebuild_bvh(g);
+            self.build_materials();
+            self.calculate_quantum();
+            self.update_edge_indices();
+            self.update_triangle_areas();
+        }
 
         let q = self.quantum;
         let quantise = |vs: &[Vec3]| vs.iter().map(|&v| BoundVertex::from_vec(v, q)).collect::<Vec<_>>();
@@ -866,6 +928,40 @@ impl Geometry {
         self.materials_block = Some(g.add(StructArray { items: mats }));
         self.material_colours_block = (!self.material_colours.is_empty()).then(|| g.add(StructArray { items: self.material_colours.clone() }));
         self.polygon_materials_block = (!self.polygon_material_indices.is_empty()).then(|| g.add(StructArray { items: self.polygon_material_indices.clone() }));
+        self.prepared = true;
+    }
+
+    /// `BoundBVH.BuildBVH(false)` (`Bounds.cs:2602`): a BVH over the polygons' boxes (item threshold 4); the
+    /// polygons and their material indices are reordered to node order, triangle edge indices follow them
+    /// through the lookup, and the bound's box and sphere become the BVH's box. No BVH for no polygons.
+    fn rebuild_bvh(&mut self, g: &mut Graph) {
+        if self.polygons.is_empty() { self.bvh = None; return; }
+        let verts: Vec<Vec3> = (0..self.vertices.len()).map(|i| self.vertex_pos(i)).collect();
+        let items: Vec<Option<BvhItem>> = self.polygons.iter().enumerate().map(|(i, p)| { let (min, max) = p.bbox(&verts); Some(BvhItem { min, max, index: i }) }).collect();
+        let built = build_bvh(g, &items, 4);
+
+        let mut lookup = vec![0usize; self.polygons.len()]; // old index -> new index
+        for (new, &old) in built.item_order.iter().enumerate() { lookup[old] = new; }
+        let mut polygons = Vec::with_capacity(self.polygons.len());
+        let mut materials = Vec::with_capacity(self.polygons.len());
+        for &old in &built.item_order {
+            let mut p = self.polygons[old];
+            materials.push(self.polygon_material_indices.get(old).copied().unwrap_or(0));
+            if let Polygon::Triangle { edges, .. } = &mut p {
+                // `edgeIndex` is a ushort: 0xFFFF and anything past the polygons is no edge
+                *edges = edges.map(|e| pack_edge(lookup.get(e as u16 as usize).map_or(-1, |&n| n as i32)));
+            }
+            polygons.push(p);
+        }
+        self.polygons = polygons;
+        self.polygon_material_indices = materials;
+
+        let bvh = &built.bvh;
+        let c = &mut self.common;
+        c.box_min = bvh.bb_min.xyz(); c.box_max = bvh.bb_max.xyz(); c.box_center = bvh.bb_center.xyz();
+        c.sphere_center = c.box_center;
+        c.sphere_radius = (c.box_max - c.box_center).length();
+        self.bvh = Some(g.add(built.bvh));
     }
 
     /// `BoundGeometry.WriteXml` (after `Bounds.WriteXml`).
@@ -897,7 +993,16 @@ impl Geometry {
         if let Some(p) = child(n, "Polygons") {
             for e in p.children().filter(|c| c.is_element()) { self.polygons.push(Polygon::read_xml(e)?); }
         }
-        self.prepare(g);
+        if self.common.kind == BoundKind::GeometryBvh {
+            // `BoundBVH.ReadXml` stops after the base's steps; `BuildBVH` runs in `GetReferences`, once the composite
+            // above has built its own BVH from the children's boxes as written in the XML (see `BoundBlock::prepare_tree`).
+            self.build_materials();
+            self.calculate_quantum();
+            self.update_edge_indices();
+            self.update_triangle_areas();
+        } else {
+            self.prepare(g);
+        }
         Ok(())
     }
 
@@ -989,14 +1094,159 @@ impl Geometry {
     }
 }
 
+// ─── composite ──────────────────────────────────────────────────────────────
+
+/// The fixed fields of a composite as stored: pointers and the child count, resolved once the cursor is done.
+struct CompositeFields { children_ptr: u64, transform1_ptr: u64, transform2_ptr: u64, flags1_ptr: u64, count: usize, bvh_ptr: u64 }
+
+/// `BoundComposite` (176 bytes). `children` are bound blocks (`None` for a null child); each child holds its own
+/// `transform` and composite flags. The arrays derived from them (transforms, boxes, flags, the BVH) are made by
+/// [`Composite::prepare`]. `ChildrenFlags2` is written as a copy of `ChildrenFlags1`, as `ReadXml` builds it.
+#[derive(Clone, Debug)]
+pub struct Composite {
+    pub common: BoundCommon,
+    pub children: Vec<Option<BlockId>>,
+    pub bvh: Option<BlockId>,
+    /// `OwnerIsFragment`: a fragment's composite has no child flags and marks its transforms with `0x7f800001`.
+    pub owner_is_fragment: bool,
+    children_block: Option<BlockId>, transforms_block: Option<BlockId>, bboxes_block: Option<BlockId>,
+    flags1_block: Option<BlockId>, flags2_block: Option<BlockId>,
+    /// Set by `prepare`; [`BoundBlock::prepare_tree`] leaves a prepared composite alone.
+    prepared: bool,
+}
+
+impl Composite {
+    pub fn new(common: BoundCommon) -> Composite {
+        Composite {
+            common, children: Vec::new(), bvh: None, owner_is_fragment: false, children_block: None, transforms_block: None,
+            bboxes_block: None, flags1_block: None, flags2_block: None, prepared: false,
+        }
+    }
+
+    fn ctx(&self) -> CompositeCtx { CompositeCtx { owner_is_fragment: self.owner_is_fragment } }
+
+    /// What `BoundComposite.ReadXml` and `GetReferences` do before the composite is written: `BuildBVH`,
+    /// `UpdateChildrenFlags`, `UpdateChildrenBounds`, `UpdateChildrenTransformations`, then the blocks holding the arrays.
+    /// The children are read as they are now; a `GeometryBvh` child updates its own box only when it is prepared.
+    pub fn prepare(&mut self, g: &mut Graph) {
+        self.build_bvh(g);
+        let child = |g: &Graph, id: Option<BlockId>| id.map(|id| g.get::<BoundBlock>(id).common().clone());
+        let kids: Vec<Option<BoundCommon>> = self.children.iter().map(|&id| child(g, id)).collect();
+
+        // UpdateChildrenFlags: none in a fragment (the child's Flags1/Flags2 are `CompositeFlags1`, twice)
+        let flags: Vec<ChildFlags> = kids.iter().map(|k| k.as_ref().map_or(ChildFlags(0, 0), |c| ChildFlags(c.composite_flags1, c.composite_flags2))).collect();
+        let with_flags = !self.owner_is_fragment && !kids.is_empty();
+        self.flags1_block = with_flags.then(|| g.add(StructArray { items: flags.clone() }));
+        self.flags2_block = with_flags.then(|| g.add(StructArray { items: flags }));
+
+        // UpdateChildrenBounds: `float.Epsilon` is the smallest denormal, not `f32::EPSILON`
+        let boxes: Vec<Aabb> = kids.iter().map(|k| k.as_ref().map_or(Aabb { min: Vec4::new(0.0, 0.0, 0.0, 0.0), max: Vec4::new(0.0, 0.0, 0.0, 0.0) }, |c| Aabb {
+            min: Vec4::new(c.box_min.x, c.box_min.y, c.box_min.z, f32::from_bits(1)), max: Vec4::new(c.box_max.x, c.box_max.y, c.box_max.z, c.margin),
+        })).collect();
+        self.bboxes_block = (!boxes.is_empty()).then(|| g.add(StructArray { items: boxes }));
+
+        // UpdateChildrenTransformations: `ChildrenTransformation2` is null and shares the first array's pointer
+        let marks = if self.owner_is_fragment { [0x7f80_0001; 4] } else { [0, 1, 1, 0] };
+        let transforms: Vec<ChildTransform> = kids.iter().map(|k| ChildTransform { m: k.as_ref().map_or(Mat4::identity(), |c| c.transform), flags: marks }).collect();
+        self.transforms_block = (!transforms.is_empty()).then(|| g.add(StructArray { items: transforms }));
+
+        self.children_block = (!self.children.is_empty()).then(|| g.add(PointerArray64 { items: self.children.clone() }));
+        self.prepared = true;
+    }
+
+    /// `BuildBVH` (`Bounds.cs:3114`): a BVH with item threshold 1, only for more than five children; the items
+    /// are the children's boxes through their transforms, and null children count towards the capacity.
+    fn build_bvh(&mut self, g: &mut Graph) {
+        self.bvh = None;
+        if self.children.len() <= 5 { return; }
+        let items: Vec<Option<BvhItem>> = self.children.iter().enumerate().map(|(index, id)| id.map(|id| {
+            let c = g.get::<BoundBlock>(id).common();
+            let (min, max) = transform_box(c.box_min, c.box_max, &c.transform);
+            BvhItem { min, max, index }
+        })).collect();
+        let built = build_bvh(g, &items, 1);
+        self.bvh = Some(g.add(built.bvh));
+    }
+
+    /// `BoundComposite.WriteXml` after `Bounds.WriteXml`.
+    fn write_xml(&self, x: &mut XmlOut, g: &Graph) {
+        if self.children.is_empty() { x.self_closing("Children"); return; }
+        let ctx = self.ctx();
+        x.open("Children");
+        for child in &self.children {
+            match child {
+                Some(id) => g.get::<BoundBlock>(*id).write_xml(x, g, Some(&ctx)),
+                None => BoundBlock::write_xml_none(x, "Item"),
+            }
+        }
+        x.close("Children");
+    }
+
+    /// `BoundComposite.ReadXml` after `Bounds.ReadXml`: the children (each read under this composite), then `prepare`.
+    fn read_xml(&mut self, n: Node, g: &mut Graph) -> Result<()> {
+        let ctx = self.ctx();
+        for item in items(n, "Children") { self.children.push(BoundBlock::read_xml(item, g, Some(&ctx))?); }
+        self.prepare(g);
+        Ok(())
+    }
+
+    fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
+        if !self.children.is_empty() && self.children_block.is_none() { bail!("a composite bound must be prepared before it is written"); }
+        self.common.write(w, g);
+        let transforms = g.ptr(self.transforms_block);
+        w.u64(g.ptr(self.children_block)); w.u64(transforms); w.u64(transforms); // ChildrenTransformation2Pointer falls back to the first
+        w.u64(g.ptr(self.bboxes_block)); w.u64(g.ptr(self.flags1_block)); w.u64(g.ptr(self.flags2_block));
+        w.u16(self.children.len() as u16); w.u16(self.children.len() as u16); w.u32(0);
+        w.u64(g.ptr(self.bvh));
+        Ok(())
+    }
+
+    fn references(&self) -> Vec<BlockId> {
+        [self.common.pages, self.children_block, self.transforms_block, self.bboxes_block, self.flags1_block, self.flags2_block, self.bvh].into_iter().flatten().collect()
+    }
+
+    fn read_fields(c: &mut Cursor) -> CompositeFields {
+        let (children_ptr, transform1_ptr, transform2_ptr) = (c.u64(), c.u64(), c.u64());
+        c.skip(8); // the children's boxes are derived again
+        let flags1_ptr = c.u64();
+        c.skip(8); // ChildrenFlags2: written as a copy of the first
+        let count = c.u16() as usize;
+        c.skip(2 + 4);
+        CompositeFields { children_ptr, transform1_ptr, transform2_ptr, flags1_ptr, count, bvh_ptr: c.u64() }
+    }
+
+    /// `BoundComposite.Read`: the children are read under this composite, each given its transform (from
+    /// `ChildrenTransformation1`, else `2`) and its flags.
+    fn read(r: &mut Reader, g: &mut Graph, f: CompositeFields, common: BoundCommon) -> Result<Composite> {
+        let ctx = CompositeCtx { owner_is_fragment: false };
+        let mut comp = Composite::new(common);
+        let pointers = r.u64s(f.children_ptr, f.count)?;
+        let transforms = match r.structs::<ChildTransform>(f.transform1_ptr, f.count)? { t if t.is_empty() => r.structs::<ChildTransform>(f.transform2_ptr, f.count)?, t => t };
+        let flags1 = r.structs::<ChildFlags>(f.flags1_ptr, f.count)?;
+        for (i, &ptr) in pointers.iter().enumerate() {
+            let child = BoundBlock::read(r, g, ptr, Some(&ctx))?;
+            if let Some(id) = child {
+                let c = g.get_mut::<BoundBlock>(id).common_mut();
+                c.transform = transforms.get(i).map_or(Mat4::identity(), |t| t.m);
+                let fl = flags1.get(i).copied().unwrap_or(ChildFlags(0, 0));
+                c.composite_flags1 = fl.0;
+                c.composite_flags2 = fl.1;
+            }
+            comp.children.push(child);
+        }
+        comp.bvh = if f.bvh_ptr != 0 { Bvh::read(r, g, f.bvh_ptr)? } else { None };
+        Ok(comp)
+    }
+}
+
 // ─── the block ──────────────────────────────────────────────────────────────
 
 /// A bound of one of the ported kinds. `Cloth` is `BoundCloth`, whose `Read`/`Write` are the
 /// 112-byte base and nothing else (its extra fields are commented out in CodeWalker).
-/// Composite bounds are not ported yet.
+#[derive(Clone)]
 pub enum BoundBlock {
     Sphere(BoundCommon), Capsule(BoundCommon), Box(BoundCommon), Disc(BoundCommon), Cylinder(BoundCommon),
-    Geometry(Geometry), GeometryBvh(Geometry), Cloth(BoundCommon),
+    Geometry(Geometry), GeometryBvh(Geometry), Cloth(BoundCommon), Composite(Composite),
 }
 
 impl BoundBlock {
@@ -1004,12 +1254,14 @@ impl BoundBlock {
         match self {
             BoundBlock::Sphere(c) | BoundBlock::Capsule(c) | BoundBlock::Box(c) | BoundBlock::Disc(c) | BoundBlock::Cylinder(c) | BoundBlock::Cloth(c) => c,
             BoundBlock::Geometry(g) | BoundBlock::GeometryBvh(g) => &g.common,
+            BoundBlock::Composite(c) => &c.common,
         }
     }
     pub fn common_mut(&mut self) -> &mut BoundCommon {
         match self {
             BoundBlock::Sphere(c) | BoundBlock::Capsule(c) | BoundBlock::Box(c) | BoundBlock::Disc(c) | BoundBlock::Cylinder(c) | BoundBlock::Cloth(c) => c,
             BoundBlock::Geometry(g) | BoundBlock::GeometryBvh(g) => &mut g.common,
+            BoundBlock::Composite(c) => &mut c.common,
         }
     }
     /// Gives a root bound its `PagesInfo`; a child of a composite has none.
@@ -1019,12 +1271,16 @@ impl BoundBlock {
     pub fn write_xml_none(x: &mut XmlOut, name: &str) { x.self_closing(&format!("{name} type=\"None\"")); }
 
     /// `Bounds.WriteXmlNode`: `<Bounds type="..">` for a root bound, `<Item type="..">` inside a composite.
-    pub fn write_xml(&self, x: &mut XmlOut, _g: &Graph, in_composite: Option<&CompositeCtx>) {
+    pub fn write_xml(&self, x: &mut XmlOut, g: &Graph, in_composite: Option<&CompositeCtx>) {
         let name = if in_composite.is_some() { "Item" } else { "Bounds" };
         let c = self.common();
         x.open_attrs(name, &format!("type=\"{}\"", c.kind.name()));
         c.write_xml(x, in_composite);
-        if let BoundBlock::Geometry(geo) | BoundBlock::GeometryBvh(geo) = self { geo.write_xml(x); }
+        match self {
+            BoundBlock::Geometry(geo) | BoundBlock::GeometryBvh(geo) => geo.write_xml(x),
+            BoundBlock::Composite(comp) => comp.write_xml(x, g),
+            _ => {}
+        }
         x.close(name);
     }
 
@@ -1037,7 +1293,11 @@ impl BoundBlock {
         let mut common = BoundCommon::new(kind);
         common.read_xml(n, parent)?;
         let block = match kind {
-            BoundKind::Composite => bail!("composite bounds: not supported yet (Task 11)"),
+            BoundKind::Composite => {
+                let mut comp = Composite::new(common);
+                comp.read_xml(n, g)?;
+                BoundBlock::Composite(comp)
+            }
             BoundKind::Sphere => BoundBlock::Sphere(common),
             BoundKind::Capsule => BoundBlock::Capsule(common),
             BoundKind::Box => BoundBlock::Box(common),
@@ -1064,9 +1324,8 @@ impl BoundBlock {
         let kind_byte = c.u8();
         c.check()?;
         let Some(kind) = BoundKind::from_byte(kind_byte) else { bail!("unknown bound type {kind_byte} at {va:#x}") };
-        if kind == BoundKind::Composite { bail!("composite bounds: not supported yet (Task 11)"); }
         // the common fields start at the type byte, 16 bytes in
-        let (common, fields) = {
+        let (common, fields, bvh_ptr, composite) = {
             let mut c = r.cursor(va + 16)?;
             let common = BoundCommon::read(&mut c, kind, vft);
             let fields = match kind {
@@ -1074,10 +1333,11 @@ impl BoundBlock {
                 BoundKind::Capsule | BoundKind::Disc | BoundKind::Cylinder => { c.skip(16); None }
                 _ => None,
             };
-            // BoundBVH: the BVH pointer and the 0x138.. fields are read once the BVH is ported (Task 11)
-            if kind == BoundKind::GeometryBvh { c.skip(32); }
+            // BoundBVH: the BVH pointer, then Unknown_138h.. (written back as constants)
+            let bvh_ptr = if kind == BoundKind::GeometryBvh { let p = c.u64(); c.skip(24); p } else { 0 };
+            let composite = (kind == BoundKind::Composite).then(|| Composite::read_fields(&mut c));
             c.check()?;
-            (common, fields)
+            (common, fields, bvh_ptr, composite)
         };
         let mut common = common;
         common.pages = read_pages_info(r, g, pages_ptr)?;
@@ -1089,12 +1349,34 @@ impl BoundBlock {
             (BoundKind::Disc, _) => BoundBlock::Disc(common),
             (BoundKind::Cylinder, _) => BoundBlock::Cylinder(common),
             (BoundKind::Geometry, Some(f)) => BoundBlock::Geometry(Geometry::read(r, g, f, common)?),
-            (BoundKind::GeometryBvh, Some(f)) => BoundBlock::GeometryBvh(Geometry::read(r, g, f, common)?),
+            (BoundKind::GeometryBvh, Some(f)) => {
+                let mut geo = Geometry::read(r, g, f, common)?;
+                // `BvhPointer > 65535`: a smaller value is junk in some drawables' bounds
+                if bvh_ptr > 65535 { geo.bvh = Bvh::read(r, g, bvh_ptr)?; }
+                BoundBlock::GeometryBvh(geo)
+            }
+            (BoundKind::Composite, _) => BoundBlock::Composite(Composite::read(r, g, composite.expect("read with the composite fields"), common)?),
             _ => unreachable!("kind {kind:?} was checked above"),
         };
         let id = g.add(block);
         r.cache(va, id);
         Ok(Some(id))
+    }
+
+    /// The `GetReferences` of a bound and everything under it, run before the graph is laid out: a geometry or
+    /// composite that is not yet prepared (one read from a file) derives its arrays and blocks. A composite goes
+    /// first, as in CodeWalker, so its BVH and child boxes see the children as they were read; a bound prepared
+    /// when its XML was read is left alone.
+    pub fn prepare_tree(g: &mut Graph, id: BlockId) {
+        let mut block = g.get::<BoundBlock>(id).clone();
+        match &mut block {
+            BoundBlock::Composite(comp) => { if !comp.prepared { comp.prepare(g); } }
+            BoundBlock::Geometry(geo) | BoundBlock::GeometryBvh(geo) => { if !geo.prepared { geo.prepare(g); } }
+            _ => {}
+        }
+        let children = if let BoundBlock::Composite(comp) = &block { comp.children.clone() } else { Vec::new() };
+        *g.get_mut::<BoundBlock>(id) = block;
+        for child in children.into_iter().flatten() { BoundBlock::prepare_tree(g, child); }
     }
 }
 
@@ -1105,11 +1387,13 @@ impl Block for BoundBlock {
             BoundBlock::Capsule(_) | BoundBlock::Disc(_) | BoundBlock::Cylinder(_) => 128,
             BoundBlock::Geometry(_) => 304,
             BoundBlock::GeometryBvh(_) => 336,
+            BoundBlock::Composite(_) => 176,
         }
     }
     fn references(&self, _g: &Graph) -> Vec<BlockId> {
         match self {
             BoundBlock::Geometry(geo) | BoundBlock::GeometryBvh(geo) => geo.references(),
+            BoundBlock::Composite(comp) => comp.references(),
             other => other.common().pages.into_iter().collect(),
         }
     }
@@ -1123,6 +1407,7 @@ impl Block for BoundBlock {
                 // BoundBVH: the BVH pointer, Unknown_138h/13Ch, Unknown_140h (0xFFFF), Unknown_142h..14Ch
                 w.u64(g.ptr(geo.bvh)); w.u32(0); w.u32(0); w.u16(0xFFFF); w.u16(0); w.u32(0); w.u32(0); w.u32(0);
             }
+            BoundBlock::Composite(comp) => comp.write(w, g)?,
         }
         Ok(())
     }
@@ -1133,6 +1418,7 @@ impl Block for BoundBlock {
 mod tests {
     use super::*;
     use crate::blocks::base::PagesInfo;
+    use crate::blocks::bvh::{Bvh, BvhNode};
     use crate::resource::SYSTEM_BASE;
 
     /// Four vertices (+-1, +-1, 0), two triangles sharing the edge (0, 2), one material of type 1.
@@ -1362,5 +1648,121 @@ mod tests {
         assert_eq!(g2.get::<Octants>(o2).items[0], vec![3, 4]);
         assert_eq!(g2.get::<Octants>(o2).items[7], vec![9]);
         assert!(g2.get::<Octants>(o2).items[3].is_empty());
+    }
+
+    // ─── composites and the BVH geometry ────────────────────────────────────
+
+    /// A composite of `n` unit boxes at distinct centres along x, `owner_is_fragment: false`.
+    fn composite_of_boxes(g: &mut Graph, n: usize) -> Composite {
+        let mut comp = Composite::new(BoundCommon::new(BoundKind::Composite));
+        for i in 0..n {
+            let mut c = BoundCommon::new(BoundKind::Box);
+            let at = Vec3::new(i as f32 * 3.0, 0.0, 0.0);
+            c.box_min = at - Vec3::new(0.5, 0.5, 0.5); c.box_max = at + Vec3::new(0.5, 0.5, 0.5); c.box_center = at; c.margin = 0.04;
+            c.transform = Mat4::from_translation(Vec3::new(0.0, i as f32, 0.0));
+            comp.children.push(Some(g.add(BoundBlock::Box(c))));
+        }
+        comp
+    }
+
+    #[test]
+    fn composite_bvh_is_padded_and_only_built_for_six_or_more_children() {
+        let mut g = Graph::new();
+        let mut five = composite_of_boxes(&mut g, 5); five.prepare(&mut g); assert!(five.bvh.is_none());
+        let mut six = composite_of_boxes(&mut g, 6); six.prepare(&mut g);
+        let bvh = g.get::<Bvh>(six.bvh.unwrap());
+        assert_eq!(bvh.nodes_capacity, 13);
+        let nodes = g.get::<StructArray<BvhNode>>(bvh.nodes.unwrap());
+        assert!(nodes.items[bvh.nodes_count as usize..].iter().all(|n| n.item_id == 1 && n.item_count == 0));
+        assert_eq!(nodes.items.len(), 13);
+    }
+
+    #[test]
+    fn composite_derived_arrays_follow_updatechildren() {
+        let mut g = Graph::new();
+        let mut comp = composite_of_boxes(&mut g, 2);
+        comp.children.push(None);
+        comp.prepare(&mut g);
+        let ts = &g.get::<StructArray<ChildTransform>>(comp.transforms_block.unwrap()).items;
+        assert_eq!(ts.len(), 3);
+        assert_eq!(ts[1].m.translation(), Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(ts[1].flags, [0, 1, 1, 0]);
+        assert_eq!(ts[2].m, Mat4::identity(), "a null child is the identity");
+        let bb = &g.get::<StructArray<Aabb>>(comp.bboxes_block.unwrap()).items;
+        assert_eq!((bb[1].min.x, bb[1].min.w.to_bits(), bb[1].max.w), (2.5, 1, 0.04), "float.Epsilon is the smallest denormal");
+        assert_eq!((bb[2].min, bb[2].max), (Vec4::new(0.0, 0.0, 0.0, 0.0), Vec4::new(0.0, 0.0, 0.0, 0.0)));
+        assert_eq!(g.get::<StructArray<ChildFlags>>(comp.flags1_block.unwrap()).items.len(), 3);
+
+        let mut frag = composite_of_boxes(&mut g, 1);
+        frag.owner_is_fragment = true;
+        frag.prepare(&mut g);
+        assert!(frag.flags1_block.is_none() && frag.flags2_block.is_none());
+        assert_eq!(g.get::<StructArray<ChildTransform>>(frag.transforms_block.unwrap()).items[0].flags, [0x7f800001; 4]);
+    }
+
+    /// A strip of `n` triangles along x over vertices (k, 0, 0) and (k, 1, 0), as a BVH geometry.
+    fn strip(n: usize) -> Geometry {
+        let mut c = BoundCommon::new(BoundKind::GeometryBvh);
+        c.margin = 0.04;
+        let mut geo = Geometry::new(c);
+        for k in 0..=n / 2 { geo.vertices.push(Vec3::new(k as f32, 0.0, 0.0)); geo.vertices.push(Vec3::new(k as f32, 1.0, 0.0)); }
+        for k in 0..n / 2 {
+            let k = 2 * k as u16;
+            geo.polygons.push(Polygon::Triangle { material: 0, area: 0.0, v: [k, k + 1, k + 2], edges: [0; 3] });
+            geo.polygons.push(Polygon::Triangle { material: 0, area: 0.0, v: [k + 1, k + 3, k + 2], edges: [0; 3] });
+        }
+        geo.common.box_min = Vec3::ZERO; geo.common.box_max = Vec3::new((n / 2) as f32, 1.0, 0.0);
+        geo.materials = vec![BoundMaterial::default()];
+        geo
+    }
+
+    /// Every edge index other than -1 must name a triangle that has both vertices of that edge.
+    fn assert_edges_are_shared(geo: &Geometry) {
+        let tri = |i: usize| match geo.polygons[i] { Polygon::Triangle { v, edges, .. } => (v, edges), _ => panic!() };
+        let mut linked = 0;
+        for i in 0..geo.polygons.len() {
+            let (v, edges) = tri(i);
+            for s in 0..3 {
+                if edges[s] == -1 { continue; }
+                let (other, _) = tri(edges[s] as usize);
+                assert!(other.contains(&v[s]) && other.contains(&v[(s + 1) % 3]), "triangle {i} edge {s} -> {}", edges[s]);
+                linked += 1;
+            }
+        }
+        assert!(linked > 0);
+    }
+
+    #[test]
+    fn bvh_geometry_reorders_polygons_and_remaps_edges() {
+        let mut g = Graph::new();
+        let mut geo = strip(8);
+        geo.build_materials(); geo.calculate_quantum(); geo.update_edge_indices();
+        let before = geo.polygons.clone();
+        assert_edges_are_shared(&geo);
+        geo.rebuild_bvh(&mut g);
+        assert_ne!(geo.polygons, before, "the polygons are regrouped by BVH node");
+        assert_eq!(geo.polygons.len(), 8);
+        assert_eq!(geo.polygons[0], before[4].with_edges_of(&geo.polygons[0]), "the upper leaf comes first");
+        assert_edges_are_shared(&geo); // the remap alone, before `update_edge_indices` would recompute them
+        assert_eq!(geo.polygon_material_indices.len(), 8);
+
+        let mut geo = strip(8);
+        geo.prepare(&mut g);
+        assert_edges_are_shared(&geo);
+        let bvh = g.get::<Bvh>(geo.bvh.unwrap());
+        assert_eq!((geo.common.box_min, geo.common.box_max), (bvh.bb_min.xyz(), bvh.bb_max.xyz()));
+        assert_eq!((geo.common.box_center, geo.common.sphere_center), (bvh.bb_center.xyz(), bvh.bb_center.xyz()));
+        assert_eq!(geo.common.sphere_radius, (geo.common.box_max - geo.common.box_center).length());
+        assert_eq!((bvh.nodes_count, bvh.trees_count), (3, 1));
+    }
+
+    impl Polygon {
+        /// Test helper: `self` with the edges of `other` (a triangle), to compare vertex indices only.
+        fn with_edges_of(self, other: &Polygon) -> Polygon {
+            match (self, other) {
+                (Polygon::Triangle { material, area, v, .. }, Polygon::Triangle { edges, .. }) => Polygon::Triangle { material, area, v, edges: *edges },
+                _ => self,
+            }
+        }
     }
 }
