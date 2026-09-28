@@ -475,10 +475,10 @@ impl Drawable {
             }
         }
         if let Some(b) = self.bound { g.get::<BoundBlock>(b).write_xml(x, g, None); }
-        if let Some(l) = self.lights {
-            let lights = &g.get::<StructArray<Light>>(l).items;
-            if !lights.is_empty() { write_items(x, "Lights", lights, |x, l| l.write_xml(x, names)); }
-        }
+        // `LightAttributes` is read inline, so a file's drawable always has a (maybe empty) list
+        // and `WriteXml` always writes `<Lights />` for one read from a file.
+        let lights = self.lights.map_or(&[][..], |l| &g.get::<StructArray<Light>>(l).items[..]);
+        write_items(x, "Lights", lights, |x, l| l.write_xml(x, names));
         Ok(())
     }
 
