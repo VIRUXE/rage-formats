@@ -4,6 +4,7 @@
 //! [`Reader`] reads them back with `ResourceDataReader`'s position-keyed block pool.
 
 pub mod base;
+pub mod bounds;
 pub mod drawable;
 pub mod light;
 pub mod shader;
