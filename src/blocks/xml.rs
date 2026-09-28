@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(parse_hash("hash_DEADBEEF"), 0xDEADBEEF);
         assert_eq!(parse_hash("prop_a"), crate::rage_joaat("prop_a"));
         assert_eq!(parse_hash(""), 0);
-        for f in [0.0f32, 1.0, -2.5, 0.333251953125, 65504.0] { assert_eq!(f16_to_f32(f32_to_f16(f)), f); }
+        for f in [0.0f32, 1.0, -2.5, 0.333_251_95, 65504.0] { assert_eq!(f16_to_f32(f32_to_f16(f)), f); }
         assert_eq!(f32_to_f16(1.0), 0x3C00);
     }
 }

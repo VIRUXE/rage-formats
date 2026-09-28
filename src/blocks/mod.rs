@@ -2,6 +2,10 @@
 //! blocks that point at each other by [`BlockId`]; [`Graph::build`] lays
 //! them into RSC7 pages the way `ResourceBuilder.Build` does and
 //! [`Reader`] reads them back with `ResourceDataReader`'s position-keyed block pool.
+//!
+//! The entry points are [`ydr::read_ydr`], [`ydr::write_ydr`], [`ydr::dump_ydr_xml`],
+//! [`ydr::build_ydr_from_xml`] and their [`ybn`] counterparts (drawables and bounds to and from
+//! CodeWalker's XML), also re-exported from the crate root.
 
 pub mod base;
 pub mod bounds;

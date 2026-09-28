@@ -259,7 +259,7 @@ impl DrawableModel {
 }
 impl Block for DrawableModel {
     fn length(&self) -> usize { self.layout().3 }
-    fn parts(&self) -> Vec<(usize, BlockId)> { self.layout().2.into_iter().zip(self.geometries.iter().copied()).map(|(o, id)| (o, id)).collect() }
+    fn parts(&self) -> Vec<(usize, BlockId)> { self.layout().2.into_iter().zip(self.geometries.iter().copied()).collect() }
     fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
         let n = self.geometries.len();
         let base = w.position();

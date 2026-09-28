@@ -427,7 +427,7 @@ impl Polygon {
 /// `BoundPolygonTriangle.UnpackEdgeIndex`.
 fn unpack_edge(e: i16) -> i32 { if e as u16 == 0xFFFF { -1 } else { e as u16 as i32 } }
 /// `BoundPolygonTriangle.PackEdgeIndex`.
-fn pack_edge(p: i32) -> i16 { if p < 0 || p > 0xFFFF { -1 } else { p as u16 as i16 } }
+fn pack_edge(p: i32) -> i16 { if !(0..=0xFFFF).contains(&p) { -1 } else { p as u16 as i16 } }
 
 // ─── octants ────────────────────────────────────────────────────────────────
 

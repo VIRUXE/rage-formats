@@ -267,6 +267,33 @@ values (a Meta file is re-paged into a fresh RSC7 container, a PSO file
 is patched in place) and report how many they changed. `hash_sites` lists
 the offsets themselves.
 
+### Drawables and bounds from XML
+
+`.ydr` drawables and `.ybn` bounds convert to and from CodeWalker's XML
+through a port of its resource block graph (`blocks`, an arena of blocks
+that point at each other by `BlockId`, laid into RSC7 pages the way
+`ResourceBuilder.Build` does):
+
+| Function | Does |
+|---|---|
+| `read_ydr(&[u8])` / `read_ybn(&[u8])` | file bytes to `(Graph, BlockId)` |
+| `write_ydr(&mut Graph, BlockId)` / `write_ybn(..)` | graph to file bytes (drawable version 165, bounds version 43) |
+| `dump_ydr_xml(&[u8], &NameTable, Option<&Path>)` / `dump_ybn_xml(&[u8])` | file to XML; embedded textures go to the folder as `.dds` |
+| `build_ydr_from_xml(&str, Option<&Path>)` / `build_ybn_from_xml(&str)` | XML to file; `<FileName>.dds` textures are read from the folder |
+
+```rust
+use rage_formats::{build_ydr_from_xml, dump_ydr_xml, NameTable};
+
+let xml = dump_ydr_xml(&bytes, &NameTable::core(), Some(dds_dir))?;
+let rebuilt = build_ydr_from_xml(&xml, Some(dds_dir))?;
+```
+
+Parity: build accepts everything CodeWalker's `XmlYdr.GetYdr` / `XmlYbn.GetYbn`
+accept; dump emits everything `YdrXml.GetXml` / `YbnXml.GetXml` emit. Legacy
+PC resources only. Writing re-derives what a file read from disk lacks (a
+bound's BVH and polygon order), so take any comparison XML from the graph
+after `write_ydr` / `write_ybn`.
+
 ## Features
 
 | Feature | Default | Effect |
