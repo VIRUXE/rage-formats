@@ -92,3 +92,10 @@ fn a_drawable_with_a_none_bound_has_none() {
     assert!(g.get::<Drawable>(root).bound.is_none());
     assert_eq!(dump_ydr_xml(&ydr, &NameTable::core(), None).unwrap(), XML);
 }
+
+#[test]
+fn the_checked_build_returns_the_file_and_its_xml() {
+    let (bytes, xml) = rage_formats::build_ydr_from_xml_checked(XML, None).unwrap();
+    assert_eq!(bytes, build_ydr_from_xml(XML, None).unwrap());
+    assert_eq!(xml, XML);
+}

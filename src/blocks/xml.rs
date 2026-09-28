@@ -262,6 +262,20 @@ pub fn format_flags<T: Copy + PartialEq>(v: T, names: &[(&str, T)], has: impl Fn
     if set.is_empty() { none.to_owned() } else { set.join(", ") }
 }
 
+/// The first line at which two documents differ, both versions quoted; `None` when they are equal.
+pub fn first_difference(a: &str, b: &str) -> Option<String> {
+    if a == b { return None; }
+    let (mut la, mut lb) = (a.lines(), b.lines());
+    let mut n = 0;
+    loop {
+        n += 1;
+        match (la.next(), lb.next()) {
+            (Some(x), Some(y)) if x == y => continue,
+            (x, y) => return Some(format!("line {n}: expected `{}`, read back `{}`", x.unwrap_or("<end>").trim(), y.unwrap_or("<end>").trim())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

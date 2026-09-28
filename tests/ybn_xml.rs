@@ -37,3 +37,10 @@ fn a_document_without_bounds_is_an_error() {
     assert!(build_ybn_from_xml("<BoundsFile />").is_err());
     assert!(build_ybn_from_xml("<BoundsFile><Bounds type=\"None\" /></BoundsFile>").is_err());
 }
+
+#[test]
+fn the_checked_build_returns_the_file_and_its_xml() {
+    let (bytes, xml) = rage_formats::build_ybn_from_xml_checked(XML).unwrap();
+    assert_eq!(bytes, build_ybn_from_xml(XML).unwrap());
+    assert_same_xml(&xml, XML);
+}

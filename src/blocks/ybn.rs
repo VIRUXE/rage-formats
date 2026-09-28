@@ -42,6 +42,23 @@ pub fn dump_ybn_xml(file: &[u8]) -> Result<String> {
 
 /// `XmlYbn.GetYbn` then a write: the `.ybn` for a `<BoundsFile>` document (a bare `<Bounds>` root is accepted too).
 pub fn build_ybn_from_xml(xml: &str) -> Result<Vec<u8>> {
+    Ok(build_ybn_graph(xml)?.1)
+}
+
+/// [`build_ybn_from_xml`], then reads the bytes back and compares their XML with that of the written graph
+/// (taken after the write, which orders BVH polygons). Returns the file and that XML; a file that does not
+/// read back identically is an error, never handed over.
+pub fn build_ybn_from_xml_checked(xml: &str) -> Result<(Vec<u8>, String)> {
+    let (g, bytes, root) = build_ybn_graph(xml)?;
+    let expected = xml_of(&g, root);
+    let back = dump_ybn_xml(&bytes).context("the written file cannot be read back")?;
+    if let Some(msg) = super::xml::first_difference(&expected, &back) {
+        bail!("the written file does not read back identically: {msg}");
+    }
+    Ok((bytes, expected))
+}
+
+fn build_ybn_graph(xml: &str) -> Result<(Graph, Vec<u8>, BlockId)> {
     let doc = roxmltree::Document::parse(xml).context("the XML is not well formed")?;
     let root = doc.root_element();
     let node = if root.tag_name().name() == "Bounds" { Some(root) } else { child(root, "Bounds") };
@@ -50,5 +67,6 @@ pub fn build_ybn_from_xml(xml: &str) -> Result<Vec<u8>> {
     let Some(bound) = BoundBlock::read_xml(node, &mut g, None)? else { bail!("the XML has a bound of type None") };
     let pages = g.add(PagesInfo::default());
     g.get_mut::<BoundBlock>(bound).set_pages(Some(pages));
-    write_ybn(&mut g, bound)
+    let bytes = write_ybn(&mut g, bound)?;
+    Ok((g, bytes, bound))
 }

@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use super::bounds::BoundBlock;
 use super::drawable::Drawable;
@@ -49,4 +49,21 @@ pub fn build_ydr_from_xml(xml: &str, dds_dir: Option<&Path>) -> Result<Vec<u8>> 
     let mut g = Graph::new();
     let root = Drawable::read_xml(doc.root_element(), &mut g, dds_dir)?;
     write_ydr(&mut g, root)
+}
+
+/// [`build_ydr_from_xml`], then reads the bytes back and compares their XML with that of the written graph
+/// (taken after the write, which orders BVH polygons). Returns the file and that XML; a file that does not
+/// read back identically is an error, never handed over.
+pub fn build_ydr_from_xml_checked(xml: &str, dds_dir: Option<&Path>) -> Result<(Vec<u8>, String)> {
+    let doc = roxmltree::Document::parse(xml).context("the XML is not well formed")?;
+    let mut g = Graph::new();
+    let root = Drawable::read_xml(doc.root_element(), &mut g, dds_dir)?;
+    let bytes = write_ydr(&mut g, root)?;
+    let names = NameTable::core();
+    let expected = xml_of(&g, root, &names, None)?;
+    let back = dump_ydr_xml(&bytes, &names, None).context("the written file cannot be read back")?;
+    if let Some(msg) = super::xml::first_difference(&expected, &back) {
+        bail!("the written file does not read back identically: {msg}");
+    }
+    Ok((bytes, expected))
 }
