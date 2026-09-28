@@ -83,7 +83,9 @@ impl XmlOut {
     /// most `per_row` items, else the items `per_row` to a line between the tags.
     pub fn raw_array<T>(&mut self, name: &str, items: &[T], per_row: usize, fmt: impl Fn(&T) -> String) {
         let per_row = per_row.max(1);
-        if items.len() <= per_row {
+        if items.is_empty() {
+            self.self_closing(name);
+        } else if items.len() <= per_row {
             let row: Vec<String> = items.iter().map(&fmt).collect();
             self.pad();
             self.out.push_str(&format!("<{name}>{}</{name}>\n", row.join(" ")));
@@ -276,6 +278,44 @@ mod tests {
         assert_eq!(items(r, "L").len(), 2);
         assert_eq!(raw_u16s(child(r, "D").unwrap()), vec![1, 2, 3]);
         assert_eq!(raw_vec3s(child(r, "P").unwrap())[1], Vec3::new(4.0, 5.0, 6.0));
+    }
+    #[test]
+    fn empty_raw_array_is_self_closing() {
+        let mut x = XmlOut::new();
+        x.out.clear();
+        x.raw_array("Data", &[] as &[u16], 4, |v| v.to_string());
+        assert_eq!(x.out, "<Data />\n");
+    }
+    #[test]
+    fn hash_strings_and_escaping() {
+        let mut names = NameTable::empty();
+        names.add("prop_a");
+        assert_eq!(hash_string(0, &names), "");
+        assert_eq!(hash_string(crate::rage_joaat("prop_a"), &names), "prop_a");
+        assert_eq!(hash_string(0xABC, &names), "hash_00000ABC");
+        assert_eq!(hash_string(0xDEADBEEF, &names), "hash_DEADBEEF");
+        assert_eq!(escape("a&b<c>d\"e"), "a&amp;b&lt;c&gt;d&quot;e");
+    }
+    #[test]
+    fn flags_parse_and_format() {
+        let names = [("A", 1u32), ("B", 2u32)];
+        assert_eq!(parse_flags("A, B", &names, |a, b| a | b, 0), 3);
+        assert_eq!(parse_flags("B", &names, |a, b| a | b, 0), 2);
+        assert_eq!(parse_flags("", &names, |a, b| a | b, 0), 0);
+        assert_eq!(format_flags(3u32, &names, |v, f| v & f == f, 0, "None"), "A, B");
+        assert_eq!(format_flags(2u32, &names, |v, f| v & f == f, 0, "None"), "B");
+        assert_eq!(format_flags(0u32, &names, |v, f| v & f == f, 0, "None"), "None");
+    }
+    #[test]
+    fn half_subnormals_and_ties() {
+        let tiny = 2f32.powi(-24);
+        assert_eq!(f32_to_f16(tiny), 1);
+        assert_eq!(f16_to_f32(1), tiny);
+        assert_eq!(f16_to_f32(f32_to_f16(3.0 * tiny)), 3.0 * tiny);
+        // exactly halfway between 0x3C00 and 0x3C01: ties to the even one
+        assert_eq!(f32_to_f16(1.0 + 2f32.powi(-11)), 0x3C00);
+        // exactly halfway between 0x3C01 and 0x3C02: ties to the even one
+        assert_eq!(f32_to_f16(1.0 + 3.0 * 2f32.powi(-11)), 0x3C02);
     }
     #[test]
     fn hashes_and_halves() {
