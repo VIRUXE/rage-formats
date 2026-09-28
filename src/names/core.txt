@@ -377,3 +377,6 @@ FL_STROBE
 FL_COUNT
 rage__fwPropInstanceListDef
 rage__fwContainerLodDef
+# Shader names a drawable refers to (`default.sps` is the shader every new drawable starts with)
+default
+default.sps

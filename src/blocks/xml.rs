@@ -100,6 +100,14 @@ impl XmlOut {
     }
 }
 
+/// `WriteItemArray`: `<name>` around an `<Item>` per element, `<name />` for none.
+pub fn write_items<T>(x: &mut XmlOut, name: &str, list: &[T], each: impl Fn(&mut XmlOut, &T)) {
+    if list.is_empty() { x.self_closing(name); return; }
+    x.open(name);
+    for i in list { x.open("Item"); each(x, i); x.close("Item"); }
+    x.close(name);
+}
+
 /// Escape `& < > "`.
 pub fn escape(s: &str) -> String {
     let mut o = String::with_capacity(s.len());

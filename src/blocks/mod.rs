@@ -4,13 +4,14 @@
 //! [`Reader`] reads them back with `ResourceDataReader`'s position-keyed block pool.
 
 pub mod base;
+pub mod drawable;
 pub mod light;
 pub mod shader;
 pub mod skeleton;
 pub mod texture;
 pub mod vertex;
 pub mod xml;
-// later tasks add: vertex, texture, shader, light, skeleton, drawable, bounds, bvh, ydr, ybn, xml
+pub mod ydr;
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};

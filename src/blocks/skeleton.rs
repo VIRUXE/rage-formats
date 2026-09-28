@@ -10,7 +10,7 @@
 use anyhow::Result;
 
 use super::base::{read_pointer_array64, read_string_block, read_struct_array, PointerArray64, StringBlock, StructArray};
-use super::xml::{child, child_attr_i32, child_attr_u32, child_text, child_vec3, child_vec4, format_flags, items, parse_flags, Node, XmlOut};
+use super::xml::{child, child_attr_i32, child_attr_u32, child_text, child_vec3, child_vec4, format_flags, items, parse_flags, write_items, Node, XmlOut};
 use super::*;
 
 /// `EBoneFlags` (`Drawable.cs:2190`).
@@ -382,14 +382,6 @@ impl Block for Skeleton {
         Ok(())
     }
     fn as_any(&self) -> &dyn Any { self } fn as_any_mut(&mut self) -> &mut dyn Any { self }
-}
-
-/// `WriteItemArray`: `<name>` around an `<Item>` per element, `<name />` for none.
-fn write_items<T>(x: &mut XmlOut, name: &str, list: &[T], each: impl Fn(&mut XmlOut, &T)) {
-    if list.is_empty() { x.self_closing(name); return; }
-    x.open(name);
-    for i in list { x.open("Item"); each(x, i); x.close("Item"); }
-    x.close(name);
 }
 
 fn le32(b: &[u8], slot: usize) -> u32 { u32::from_le_bytes(b[slot * 4..slot * 4 + 4].try_into().unwrap()) }
