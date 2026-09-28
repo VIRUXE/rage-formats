@@ -4,6 +4,7 @@
 //! [`Reader`] reads them back with `ResourceDataReader`'s position-keyed block pool.
 
 pub mod base;
+pub mod shader;
 pub mod texture;
 pub mod vertex;
 pub mod xml;
@@ -46,6 +47,8 @@ impl Graph {
     pub fn get<B: Block>(&self, id: BlockId) -> &B {
         self.blocks[id.0 as usize].as_any().downcast_ref().expect("block type")
     }
+    /// `get`, or `None` when the block is of another type.
+    pub fn try_get<B: Block>(&self, id: BlockId) -> Option<&B> { self.blocks[id.0 as usize].as_any().downcast_ref() }
     pub fn get_mut<B: Block>(&mut self, id: BlockId) -> &mut B {
         self.blocks[id.0 as usize].as_any_mut().downcast_mut().expect("block type")
     }

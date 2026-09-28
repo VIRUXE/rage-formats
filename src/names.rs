@@ -19,6 +19,11 @@ pub const CORE_NAMES: &str = include_str!("names/core.txt");
 /// is an `itemType`, never a file — so they are built in.
 pub const CODEWALKER_NAMES: &str = include_str!("names/codewalker.txt");
 
+/// The shader parameter names of CodeWalker's `ShaderParamNames` enum, one per line in
+/// file order. Their hashes are those of the *lowercased* name, so [`NameTable::core`]
+/// loads them with [`NameTable::add_list_lowercase`].
+pub const SHADER_PARAM_NAMES: &str = include_str!("names/shader_params.txt");
+
 /// A hash → name lookup.
 #[derive(Debug, Clone, Default)]
 pub struct NameTable {
@@ -31,12 +36,40 @@ impl NameTable {
         Self::default()
     }
 
-    /// The built-in names: this crate's own list, then CodeWalker's.
+    /// The built-in names: the shader parameter names, this crate's own list, then CodeWalker's.
     pub fn core() -> Self {
         let mut t = Self::default();
+        // first: a lowercase spelling in the other lists must not hide the enum's own case
+        t.add_list_lowercase(SHADER_PARAM_NAMES);
         t.add_list(CORE_NAMES);
         t.add_list(CODEWALKER_NAMES);
         t
+    }
+
+    /// Like [`add_list`](Self::add_list) for names hashed lowercased (`GetHash(name.ToLowerInvariant())`):
+    /// each is filed under the hash of its lowercase form but keeps its own case.
+    pub fn add_list_lowercase(&mut self, text: &str) -> usize {
+        let mut added = 0;
+        for line in text.lines() {
+            let name = line.trim();
+            if name.is_empty() || name.starts_with('#') {
+                continue;
+            }
+            if self.add_lowercase(name) {
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Adds one name under the hash of its lowercase form. False when that hash was already present.
+    pub fn add_lowercase(&mut self, name: &str) -> bool {
+        let hash = rage_joaat(&name.to_lowercase());
+        if self.map.contains_key(&hash) {
+            return false;
+        }
+        self.map.insert(hash, name.to_owned());
+        true
     }
 
     /// Adds every name in `text` (one per line; blank lines and `#`
@@ -148,5 +181,18 @@ mod tests {
         let mut t = NameTable::core();
         assert_eq!(t.add_list("# comment\n\nCMapData\nMyOwnStruct\n"), 1);
         assert_eq!(t.get(rage_joaat("MyOwnStruct")), Some("MyOwnStruct"));
+    }
+}
+
+#[cfg(test)]
+mod shader_param_tests {
+    use super::*;
+
+    #[test]
+    fn shader_parameter_names_match_codewalkers_enum_values() {
+        for (name, value) in [("DiffuseSampler", 4_059_966_321u32), ("specularFactor", 376_311_761), ("BumpSampler", 1_186_448_975)] {
+            assert_eq!(rage_joaat(&name.to_lowercase()), value, "{name}");
+            assert_eq!(NameTable::core().get(value), Some(name));
+        }
     }
 }
