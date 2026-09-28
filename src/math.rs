@@ -121,6 +121,32 @@ impl Vec4 {
     pub fn new(x: f32, y: f32, z: f32, w: f32) -> Self { Self { x, y, z, w } }
 
     pub fn xyz(self) -> Vec3 { Vec3::new(self.x, self.y, self.z) }
+
+    /// `Quaternion * Quaternion` as SharpDX defines it (the Hamilton product,
+    /// `self` on the left), treating `self`/`rhs` as `(x, y, z, w)` quaternions.
+    /// `parent * child` applies the child's rotation first.
+    pub fn quat_mul(self, rhs: Vec4) -> Vec4 {
+        let (l, r) = (self, rhs);
+        Vec4::new(
+            l.x * r.w + r.x * l.w + (l.y * r.z - l.z * r.y),
+            l.y * r.w + r.y * l.w + (l.z * r.x - l.x * r.z),
+            l.z * r.w + r.z * l.w + (l.x * r.y - l.y * r.x),
+            l.w * r.w - (l.x * r.x + l.y * r.y + l.z * r.z),
+        )
+    }
+
+    /// CodeWalker's `Quaternion.Multiply(Vector3)`: rotates `v` by the
+    /// `(x, y, z, w)` quaternion `self`.
+    pub fn quat_rotate(self, v: Vec3) -> Vec3 {
+        let (xx, yy, zz) = (self.x * 2.0 * self.x, self.y * 2.0 * self.y, self.z * 2.0 * self.z);
+        let (wx, wy, wz) = (self.w * 2.0 * self.x, self.w * 2.0 * self.y, self.w * 2.0 * self.z);
+        let (xy, xz, yz) = (self.x * 2.0 * self.y, self.x * 2.0 * self.z, self.y * 2.0 * self.z);
+        Vec3::new(
+            v.x * ((1.0 - yy) - zz) + v.y * (xy - wz) + v.z * (xz + wy),
+            v.x * (xy + wz) + v.y * ((1.0 - xx) - zz) + v.z * (yz - wx),
+            v.x * (xz - wy) + v.y * (yz + wx) + v.z * ((1.0 - xx) - yy),
+        )
+    }
 }
 
 impl Add for Vec4 {
@@ -189,6 +215,98 @@ impl Mat4 {
             self.get(0, 1) * v.x + self.get(1, 1) * v.y + self.get(2, 1) * v.z,
             self.get(0, 2) * v.x + self.get(1, 2) * v.y + self.get(2, 2) * v.z,
         )
+    }
+
+    /// Row `i` (0..4) of the D3D matrix these floats are (`M{i+1}1..M{i+1}4`);
+    /// the translation is row 3.
+    pub fn row(&self, i: usize) -> Vec4 {
+        Vec4::new(self.0[i * 4], self.0[i * 4 + 1], self.0[i * 4 + 2], self.0[i * 4 + 3])
+    }
+
+    /// Replaces row `i` (0..4).
+    pub fn set_row(&mut self, i: usize, v: Vec4) {
+        self.0[i * 4..i * 4 + 4].copy_from_slice(&[v.x, v.y, v.z, v.w]);
+    }
+
+    /// SharpDX `ScaleVector`: the diagonal `(M11, M22, M33)`.
+    pub fn scale_vector(&self) -> Vec3 { Vec3::new(self.0[0], self.0[5], self.0[10]) }
+
+    /// Sets the diagonal `(M11, M22, M33)`.
+    pub fn set_scale_vector(&mut self, s: Vec3) {
+        self.0[0] = s.x;
+        self.0[5] = s.y;
+        self.0[10] = s.z;
+    }
+
+    /// SharpDX `Column4`: `(M14, M24, M34, M44)`, the fourth component of each row.
+    pub fn column4(&self) -> Vec4 { Vec4::new(self.0[3], self.0[7], self.0[11], self.0[15]) }
+
+    /// Sets `(M14, M24, M34, M44)`.
+    pub fn set_column4(&mut self, v: Vec4) {
+        self.0[3] = v.x;
+        self.0[7] = v.y;
+        self.0[11] = v.z;
+        self.0[15] = v.w;
+    }
+
+    /// SharpDX `Matrix.AffineTransformation(1.0f, rotation, translation)`: the
+    /// row-vector rotation matrix of the `(x, y, z, w)` quaternion `q`, with
+    /// `t` in row 3, so that `p * M` rotates and then translates.
+    pub fn from_quat_pos(q: Vec4, t: Vec3) -> Mat4 {
+        let (xx, yy, zz) = (q.x * q.x, q.y * q.y, q.z * q.z);
+        let (xy, zw, zx, yw, yz, xw) = (q.x * q.y, q.z * q.w, q.z * q.x, q.y * q.w, q.y * q.z, q.x * q.w);
+        Mat4([
+            1.0 - 2.0 * (yy + zz), 2.0 * (xy + zw), 2.0 * (zx - yw), 0.0,
+            2.0 * (xy - zw), 1.0 - 2.0 * (zz + xx), 2.0 * (yz + xw), 0.0,
+            2.0 * (zx + yw), 2.0 * (yz - xw), 1.0 - 2.0 * (yy + xx), 0.0,
+            t.x, t.y, t.z, 1.0,
+        ])
+    }
+
+    /// SharpDX `Matrix.Invert`: the general 4x4 inverse, the zero matrix when singular.
+    pub fn inverse(&self) -> Mat4 {
+        let m = |r: usize, c: usize| self.0[(r - 1) * 4 + (c - 1)];
+        let (m11, m12, m13, m14) = (m(1, 1), m(1, 2), m(1, 3), m(1, 4));
+        let (m21, m22, m23, m24) = (m(2, 1), m(2, 2), m(2, 3), m(2, 4));
+        let (m31, m32, m33, m34) = (m(3, 1), m(3, 2), m(3, 3), m(3, 4));
+        let (m41, m42, m43, m44) = (m(4, 1), m(4, 2), m(4, 3), m(4, 4));
+        let b0 = m31 * m42 - m32 * m41;
+        let b1 = m31 * m43 - m33 * m41;
+        let b2 = m34 * m41 - m31 * m44;
+        let b3 = m32 * m43 - m33 * m42;
+        let b4 = m34 * m42 - m32 * m44;
+        let b5 = m33 * m44 - m34 * m43;
+        let d11 = m22 * b5 + m23 * b4 + m24 * b3;
+        let d12 = m21 * b5 + m23 * b2 + m24 * b1;
+        let d13 = m21 * -b4 + m22 * b2 + m24 * b0;
+        let d14 = m21 * b3 + m22 * -b1 + m23 * b0;
+        let det = m11 * d11 - m12 * d12 + m13 * d13 - m14 * d14;
+        if det == 0.0 { return Mat4([0.0; 16]); }
+        let det = 1.0 / det;
+        let a0 = m11 * m22 - m12 * m21;
+        let a1 = m11 * m23 - m13 * m21;
+        let a2 = m14 * m21 - m11 * m24;
+        let a3 = m12 * m23 - m13 * m22;
+        let a4 = m14 * m22 - m12 * m24;
+        let a5 = m13 * m24 - m14 * m23;
+        let d21 = m12 * b5 + m13 * b4 + m14 * b3;
+        let d22 = m11 * b5 + m13 * b2 + m14 * b1;
+        let d23 = m11 * -b4 + m12 * b2 + m14 * b0;
+        let d24 = m11 * b3 + m12 * -b1 + m13 * b0;
+        let d31 = m42 * a5 + m43 * a4 + m44 * a3;
+        let d32 = m41 * a5 + m43 * a2 + m44 * a1;
+        let d33 = m41 * -a4 + m42 * a2 + m44 * a0;
+        let d34 = m41 * a3 + m42 * -a1 + m43 * a0;
+        let d41 = m32 * a5 + m33 * a4 + m34 * a3;
+        let d42 = m31 * a5 + m33 * a2 + m34 * a1;
+        let d43 = m31 * -a4 + m32 * a2 + m34 * a0;
+        let d44 = m31 * a3 + m32 * -a1 + m33 * a0;
+        Mat4([
+            d11 * det, -d21 * det, d31 * det, -d41 * det,
+            -d12 * det, d22 * det, -d32 * det, d42 * det,
+            d13 * det, -d23 * det, d33 * det, -d43 * det,
+            -d14 * det, d24 * det, -d34 * det, d44 * det,
+        ])
     }
 
     #[inline]
@@ -348,6 +466,56 @@ mod tests {
         let m = Mat4::from_translation(Vec3::X).with_translation(Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(m.translation(), Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(m.transform_vector(Vec3::Y), Vec3::Y);
+    }
+
+    #[test]
+    fn quaternion_matrix_rotates_x_to_y_for_a_quarter_turn_about_z() {
+        let h = 0.5f32.sqrt();
+        let q = Vec4::new(0.0, 0.0, h, h);
+        let m = Mat4::from_quat_pos(q, Vec3::new(1.0, 2.0, 3.0));
+        let p = m.transform_point(Vec3::X).xyz();
+        assert!((p - Vec3::new(1.0, 3.0, 3.0)).length() < 1e-6, "{p:?}");
+        assert!((q.quat_rotate(Vec3::X) - Vec3::Y).length() < 1e-6);
+        assert_eq!(m.translation(), Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn quaternion_product_composes_like_the_rotations() {
+        let h = 0.5f32.sqrt();
+        let (qz, qx) = (Vec4::new(0.0, 0.0, h, h), Vec4::new(h, 0.0, 0.0, h));
+        let q = qz.quat_mul(qx); // qx first, then qz
+        let v = Vec3::new(0.3, -0.7, 0.9);
+        assert!((q.quat_rotate(v) - qz.quat_rotate(qx.quat_rotate(v))).length() < 1e-6);
+        let ident = Vec4::new(0.0, 0.0, 0.0, 1.0);
+        assert_eq!(qz.quat_mul(ident), qz);
+    }
+
+    #[test]
+    fn inverse_undoes_the_matrix() {
+        let (a, b, c, d) = (0.1f32, 0.2f32, 0.3f32, 0.9f32);
+        let n = (a * a + b * b + c * c + d * d).sqrt();
+        let mut m = Mat4::from_quat_pos(Vec4::new(a / n, b / n, c / n, d / n), Vec3::new(4.0, -5.0, 6.0));
+        m.set_scale_vector(Vec3::new(2.0, 0.5, 3.0));
+        let p = m.mul(&m.inverse());
+        for (i, v) in p.0.iter().enumerate() {
+            let want = if i % 5 == 0 { 1.0 } else { 0.0 };
+            assert!((v - want).abs() < 1e-5, "{p:?}");
+        }
+        assert_eq!(Mat4([0.0; 16]).inverse(), Mat4([0.0; 16]), "a singular matrix inverts to zero");
+    }
+
+    #[test]
+    fn rows_and_the_scale_vector_address_the_d3d_layout() {
+        let mut m = Mat4::identity();
+        m.set_row(3, Vec4::new(7.0, 8.0, 9.0, 10.0));
+        assert_eq!(m.row(3), Vec4::new(7.0, 8.0, 9.0, 10.0));
+        assert_eq!(m.translation(), Vec3::new(7.0, 8.0, 9.0));
+        m.set_scale_vector(Vec3::new(2.0, 3.0, 4.0));
+        assert_eq!(m.scale_vector(), Vec3::new(2.0, 3.0, 4.0));
+        assert_eq!(m.row(1).y, 3.0);
+        m.set_column4(Vec4::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(m.column4(), Vec4::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(m.row(2).w, 3.0);
     }
 
     #[test]
