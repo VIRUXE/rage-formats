@@ -280,6 +280,7 @@ that point at each other by `BlockId`, laid into RSC7 pages the way
 | `write_ydr(&mut Graph, BlockId)` / `write_ybn(..)` | graph to file bytes (drawable version 165, bounds version 43) |
 | `dump_ydr_xml(&[u8], &NameTable, Option<&Path>)` / `dump_ybn_xml(&[u8])` | file to XML; embedded textures go to the folder as `.dds` |
 | `build_ydr_from_xml(&str, Option<&Path>)` / `build_ybn_from_xml(&str)` | XML to file; `<FileName>.dds` textures are read from the folder |
+| `build_ydr_from_xml_checked(&str, Option<&Path>)` / `build_ybn_from_xml_checked(&str)` | the same, then the bytes are read back and their XML compared with the written graph's; returns a `Built` (`bytes`, `xml`, `warnings`) or an error, never a file that reads back differently |
 
 ```rust
 use rage_formats::{build_ydr_from_xml, dump_ydr_xml, NameTable};
@@ -288,11 +289,38 @@ let xml = dump_ydr_xml(&bytes, &NameTable::core(), Some(dds_dir))?;
 let rebuilt = build_ydr_from_xml(&xml, Some(dds_dir))?;
 ```
 
-Parity: build accepts everything CodeWalker's `XmlYdr.GetYdr` / `XmlYbn.GetYbn`
-accept; dump emits everything `YdrXml.GetXml` / `YbnXml.GetXml` emit. Legacy
-PC resources only. Writing re-derives what a file read from disk lacks (a
-bound's BVH and polygon order), so take any comparison XML from the graph
-after `write_ydr` / `write_ybn`.
+Parity: build accepts every valid document CodeWalker's `XmlYdr.GetYdr` /
+`XmlYbn.GetYbn` accept; dump emits everything `YdrXml.GetXml` / `YbnXml.GetXml`
+emit. Legacy PC resources only. Writing re-derives what a file read from disk
+lacks (a bound's BVH and polygon order), so take any comparison XML from the
+graph after `write_ydr` / `write_ybn`.
+
+Where CodeWalker guesses, build is stricter and stops with an error: an unknown
+or missing bound `type` (CodeWalker makes a sphere), a vertex row with fewer
+values than its layout needs, a `CompositeTransform` that is not 16 numbers, a
+composite inside a composite, a `<DrawableModelsX>` list next to a LOD list,
+a count too big for its 8- or 16-bit field (65536 vertices in a geometry, say),
+an XML whose root is not `<Drawable>` (drawable) or `<BoundsFile>` / `<Bounds>`
+(bound). What CodeWalker accepts silently but the game may not comes back as
+`Built::warnings`: a shader parameter naming a texture that is not embedded
+(the game looks it up in the archetype's texture dictionary) and a bone
+without a name.
+
+A dump→build cycle is not bit-exact for bounds, exactly as CodeWalker's own
+import is not: a build may move a bound's vertices by up to one quantum per
+axis (they are stored as 16-bit multiples of the quantum, which is recomputed
+from the box), and the drift can add up over repeated cycles; a `GeometryBVH`'s
+polygons are put back in the order its rebuilt BVH gives them. The `_checked`
+functions compare XML dumped with no DDS folder, so texture pixels are not part
+of the comparison, only the texture's fields. A dump writes each embedded
+texture as a plain file name inside the folder, whatever the texture is
+called: path separators, `: * ? " < > |` and control characters become `_`
+(`blocks::texture::dds_file_name`), and `<FileName>` says the same name.
+
+A corrupt or crafted file is an error, never a panic: a pointer that lands on a
+block already read as another type is refused (a plain array there is read
+again on its own, as CodeWalker's `ResourceDataReader` does, which some modded
+files need).
 
 ## Features
 
