@@ -318,8 +318,8 @@ called: path separators, `: * ? " < > |` and control characters become `_`
 (`blocks::texture::dds_file_name`), and `<FileName>` says the same name.
 
 A corrupt or crafted file is an error, never a panic: a pointer that lands on a
-block already read as another type is refused (a plain array there is read
-again on its own, as CodeWalker's `ResourceDataReader` does, which some modded
+block already read as another type is refused (a plain array or vertex data
+there is read again on its own, as CodeWalker's `ResourceDataReader` does, which some modded
 files need).
 
 ## Features

@@ -184,7 +184,7 @@ fn short_type_name(full: &str) -> String {
 /// virtual address, so an address read twice yields the same [`BlockId`]. The pool
 /// remembers the type each address was read as: a pointer that lands on a block of
 /// another type (a corrupt or crafted file) is an error, never a block of the wrong type
-/// (a plain array there is read again on its own, see [`base::read_struct_array`]).
+/// (a plain array or vertex data there is read again on its own, see [`base::read_struct_array`]).
 pub struct Reader { sys: Vec<u8>, gfx: Vec<u8>, pool: HashMap<u64, Pooled> }
 
 impl Reader {

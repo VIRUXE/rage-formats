@@ -200,12 +200,21 @@ impl VertexData {
         Ok(vd)
     }
     /// `ReadBlockAt<VertexData>`: `count * stride` bytes, one block per address.
+    /// Plain bytes, so at an address already read as a block of another type (a stray pointer some modded
+    /// files carry) they are read again on their own and left out of the pool, as `ResourceDataReader.ReadBlock`
+    /// does, rather than refused.
     fn read(r: &mut Reader, g: &mut Graph, va: u64, stride: usize, count: usize) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
+        let pool = match r.cached_as::<Self>(va) {
+            Ok(Some(id)) => return Ok(Some(id)),
+            Ok(None) => true,
+            Err(_) => false,
+        };
         let len = stride.checked_mul(count).ok_or_else(|| anyhow::anyhow!("{count} vertices of {stride} bytes overflow"))?;
         let bytes = r.bytes(va, len)?;
-        let id = g.add(VertexData { bytes, stride, count }); r.cache::<Self>(va, id); Ok(Some(id))
+        let id = g.add(VertexData { bytes, stride, count });
+        if pool { r.cache::<Self>(va, id); }
+        Ok(Some(id))
     }
 }
 impl Block for VertexData {
