@@ -1,7 +1,7 @@
 //! RAGE resource formats: the RSC7-wrapped files GTA V streams — textures
 //! (`.ytd`), drawables (`.ydr`/`.ydd`), fragments (`.yft`), archetype and
-//! ped metadata (`.ytyp`/`.ymt`), texture-dictionary relationships
-//! (`gtxd.ymt`), the world cache (`cache_y.dat`) — parsed from bytes into plain Rust structs. Getting those
+//! ped metadata (`.ytyp`/`.ymt`), collision (`.ybn`), navmeshes (`.ynv`), path nodes (`.ynd`),
+//! texture-dictionary relationships (`gtxd.ymt`), the world cache (`cache_y.dat`) — parsed from bytes into plain Rust structs. Getting those
 //! bytes out of an `.rpf` is the `rpf-archive` crate's job; drawing them is
 //! `rage-render`'s.
 
@@ -19,6 +19,7 @@ pub mod gtxd;
 pub mod ybn;
 pub mod ymap;
 pub mod ynv;
+pub mod ynd;
 pub mod cache_dat;
 pub mod value;
 pub mod pso;
@@ -65,6 +66,11 @@ pub use ymap::{parse_ymap, parse_ymap_entities, parse_ymap_header, parse_ymap_ml
 pub use ybn::{parse_ybn, Bound, BoundGeometry, BoundKind, BoundTransform, BoundTriangle, Triangle, Ybn};
 pub use ynv::{parse_ynv, serialize_ynv, cell_bounds, cell_file_name, cell_for_position, NavEdge, NavEdgeEnd, NavPoint,
               NavPoly, NavPortal, Ynv, ADJACENT_NONE};
+pub use ynd::{parse_ynd, serialize_ynd, ynd_to_xml, ynd_from_xml, dump_ynd_xml, build_ynd_from_xml, area_id_from_file_name as ynd_area_id_from_file_name,
+              cell_bounds as ynd_cell_bounds, cell_file_name as ynd_cell_file_name, cell_for_position as ynd_cell_for_position,
+              cell_of_area as ynd_cell_of_area, area_id as ynd_area_id, is_island_area as ynd_is_island_area, same_cell as ynd_same_cell,
+              ISLAND_FLAG as YND_ISLAND_FLAG, Heightmap, NodeDictionary, NodeJunctionRef, NodeSpecial, NodeSpeed,
+              PathJunction, PathLink, PathNode, Ynd};
 pub use cache_dat::{parse_cache_dat, BoundsStoreItem, CacheDat, CacheFileDate, InteriorProxy, MapDataNode};
 pub use value::{MetaArray, MetaDump, MetaStruct, MetaValue};
 pub use pso::{dump_pso, is_pso, parse_pso, PsoFile, PSO_MAGIC};

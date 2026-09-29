@@ -12,7 +12,7 @@ all three.
 
 ```toml
 [dependencies]
-rage-formats = "0.2"
+rage-formats = "0.4"
 ```
 
 ## What it reads and writes
@@ -25,6 +25,7 @@ rage-formats = "0.2"
 | `.yft` fragment | yes | | `parse_yft` | `Fragment`: main drawable, physics children with transforms, bone pose |
 | `.ybn` collision | yes | | `parse_ybn` | the `phBound` tree; `Ybn::triangles()` flattens it to world space |
 | `.ynv` navmesh | yes | yes | `parse_ynv`, `serialize_ynv` | `Ynv`: polygons with vertices, flags and edge adjacency, portals, points |
+| `.ynd` path nodes | yes | yes | `parse_ynd`, `serialize_ynd`, `ynd_to_xml`, `ynd_from_xml` | `Ynd`: nodes with positions, street hashes, flags and their links; junction heightmaps; CodeWalker's `<NodeDictionary>` XML both ways |
 | `.ymap` placements | yes | | `parse_ymap`, `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapHeader` (name, parent, flags, extents); `YmapEntity` per entity, with `to_world()`; `MloInstance` per interior, with its default entity sets |
 | `.ytyp` archetypes | yes | | `parse_ytyp` | every archetype's box and texture dictionary; each MLO's entities, named rooms, portals and entity sets |
 | `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo` |
@@ -178,6 +179,43 @@ writer rebuilds everything derived: quantised vertices deduplicated inside
 the cell box, index and edge lists in 16 KiB parts, the adjacent-area table,
 portal links, per-polygon cell boxes and part ids, and the two-level sector
 quadtree, then wraps it in an RSC7 file whose blocks never straddle a page.
+
+### Path nodes, read and write
+
+```rust
+use rage_formats::{parse_ynd, serialize_ynd, ynd_cell_file_name, ynd_cell_for_position, PathLink, Vec3};
+
+let mut cell = parse_ynd(&std::fs::read("nodes489.ynd")?)?;
+println!("{} nodes, {} junctions", cell.nodes.len(), cell.junctions.len());
+for n in cell.nodes.iter().filter(|n| n.is_junction()) {
+    println!("junction at {:?}: {} links, {}", n.position, n.links.len(), n.special().name());
+}
+
+let id = cell.nodes.len() as u16;
+let node = cell.add_node(489, Vec3::new(-3500.0, -400.0, 20.0));
+node.links.push(PathLink::to(489, 0));            // to node 0 of this cell
+cell.nodes[0].links.push(PathLink::to(489, id));  // and back
+cell.recalculate_node_indices();                   // vehicle nodes first, the counts refreshed
+
+std::fs::write("nodes489.ynd", serialize_ynd(&cell)?)?;
+assert_eq!(ynd_cell_for_position(-3500.0, -400.0), (9, 15));
+assert_eq!(ynd_cell_file_name(9, 15), "nodes489.ynd");
+```
+
+A cell is 512 m square on a 32×32 grid from (-8192, -8192); its area id is
+`y * 32 + x` and its file `nodes<area>.ynd`. Cayo Perico's cells carry 1024
+on top (`ynd_is_island_area`), streaming in over the sea cells they replace,
+and their links name the cell without it (`ynd_same_cell`). Positions are
+stored to a quarter of a metre in x and y and a 32nd in z; `set_position`
+quantises as CodeWalker does. Every node's flag bits have accessors
+(`is_junction`, `highway`, `tunnel`, `is_disabled`, `speed`, `special`,
+`is_ped_node`, ...), as do a link's lane counts, `shortcut` and
+`dont_use_for_navigation`. The writer computes the link and heightmap
+offsets and lays the five arrays out with the same block graph
+`ResourceBuilder.Build` uses (resource version 1): a retail cell rewrites to
+the same nodes, links and junctions and serialises byte-identically the
+second time. `ynd_to_xml`/`ynd_from_xml` are CodeWalker's `<NodeDictionary>`
+XML; `dump_ynd_xml`/`build_ynd_from_xml` go straight from and to bytes.
 A retail cell survives parse, serialize, parse with every polygon, edge,
 flag, portal and point equal, and a second serialize is byte-identical.
 
@@ -337,6 +375,7 @@ files from environment variables:
 
 ```sh
 RAGE_TEST_YNV='C:\...\navmesh[108][96].ynv' \
+RAGE_TEST_YND='C:\...\nodes489.ynd' \
 RAGE_TEST_YBN='C:\...\stream\ybn\interior.ybn' \
 RAGE_TEST_YMAP='C:\...\stream\ymap\interior_milo_.ymap' \
 RAGE_TEST_MLO_DIR='C:\...\stream' \
@@ -345,7 +384,8 @@ RAGE_TEST_YTYP='C:\...\stream\props.ytyp' \
 cargo test --test real_files -- --ignored --nocapture
 ```
 
-They print what they found, assert the navmesh round trip, and check that
+They print what they found, assert the navmesh and path node round trips
+(`RAGE_TEST_YND` may name a folder of cells), and check that
 the generic dump of the map and type files names every structure member.
 
 ## License

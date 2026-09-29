@@ -186,3 +186,58 @@ fn ytyp_dumps_with_every_member_named() {
     assert!(unnamed_tags.is_empty(), "members without names: {unnamed_tags:?}");
     println!("{} archetypes, {} MLOs, {} XML lines", ytyp.archetypes.len(), ytyp.mlos.len(), xml.lines().count());
 }
+
+/// `RAGE_TEST_YND`: a retail path node cell (or a folder of them) reads,
+/// rewrites to the same nodes, links and junctions, and serialises the same
+/// bytes twice; the XML round-trips too.
+#[test]
+#[ignore]
+fn path_nodes_round_trip() {
+    use rage_formats::{dump_ynd_xml, ynd_from_xml, ynd_to_xml, NameTable};
+    let Ok(path) = std::env::var("RAGE_TEST_YND") else { return };
+    let path = std::path::Path::new(&path);
+    let files: Vec<std::path::PathBuf> = if path.is_dir() {
+        let mut v: Vec<_> = std::fs::read_dir(path).unwrap().flatten().map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ynd"))).collect();
+        v.sort();
+        v
+    } else {
+        vec![path.to_path_buf()]
+    };
+    let names = NameTable::core();
+    let (mut identical, mut rewritten) = (0usize, 0usize);
+    for file in &files {
+        let data = std::fs::read(file).unwrap();
+        let d = rage_formats::ynd::parse_node_dictionary(&data).unwrap();
+        let ynd = rage_formats::parse_ynd(&data).unwrap();
+        let ped = ynd.nodes.iter().filter(|n| n.is_ped_node()).count();
+        let foreign = ynd.nodes.iter().flat_map(|n| &n.links).filter(|l| Some(l.area_id as u32) != ynd.area_id()).count();
+        let junctions = ynd.junctions.len();
+        if files.len() == 1 || junctions > 0 || ynd.area_id().is_some_and(|a| a >= 1024) {
+            println!("{}: vft {:#010x} area {:?} nodes {} (vehicle {} ped {}, {} ped by flags) links {} ({} to other cells) junctions {} refs {} heightmap bytes {} unk {:?}",
+                file.display(), ynd.vft, ynd.area_id(), ynd.nodes.len(), ynd.vehicle_node_count, ynd.ped_node_count, ped,
+                d.links.len(), foreign, junctions, ynd.junction_refs.len(), d.junction_heightmap_bytes.len(), ynd.unknowns);
+        }
+        let unused = d.nodes.iter().filter(|n| n.unused0 != 0 || n.unused1 != 0 || n.unused2 != 0 || n.unused3 != 0 || n.unused4 != 0).count();
+        assert_eq!(unused, 0, "{}: nodes with non-zero unused words", file.display());
+        if let Some(n) = ynd.nodes.first() {
+            println!("  node 0: {:?} street {:#010x} flags {} {} {} {} {} speed {:?} special {} links {}",
+                n.position, n.street_name, n.flags0, n.flags1, n.flags2, n.flags3, n.flags4, n.speed(), n.special().name(), n.links.len());
+        }
+        let bytes = rage_formats::serialize_ynd(&ynd).unwrap();
+        let back = rage_formats::parse_ynd(&bytes).unwrap();
+        assert_eq!(back, ynd, "{}", file.display());
+        assert_eq!(back.to_dictionary().unwrap(), d, "{}: the dictionary is rebuilt as read", file.display());
+        let again = rage_formats::serialize_ynd(&back).unwrap();
+        assert_eq!(again, bytes, "{}: second serialisation must be byte-identical", file.display());
+        if bytes == data { identical += 1 } else { rewritten += 1 }
+
+        // The XML carries no vtable value, so a file built from it gets the default one.
+        let xml = ynd_to_xml(&ynd, &names);
+        let mut from_xml = ynd_from_xml(&xml).unwrap();
+        from_xml.vft = ynd.vft;
+        assert_eq!(from_xml, ynd, "{}: XML round trip", file.display());
+        assert_eq!(dump_ynd_xml(&bytes, &names).unwrap(), xml);
+    }
+    println!("{} files: {identical} rewritten byte-identical to retail, {rewritten} laid out differently", files.len());
+}
