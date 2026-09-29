@@ -54,7 +54,7 @@ impl Bvh {
     /// `BVH.Read`: the nodes are read up to their capacity, the trees up to their count.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let (nodes_ptr, nodes_count, nodes_capacity) = read_simple_list64b(&mut c);
         c.skip(16);
@@ -64,7 +64,7 @@ impl Bvh {
         let nodes = read_struct_array::<BvhNode>(r, g, nodes_ptr, nodes_capacity as usize)?;
         let trees = read_struct_array::<BvhTree>(r, g, trees_ptr, trees_count as usize)?;
         let id = g.add(Bvh { nodes, nodes_count, nodes_capacity, bb_min, bb_max, bb_center, quantum_inverse, quantum, trees, trees_count: trees_count as usize });
-        r.cache(va, id);
+        r.cache::<Self>(va, id);
         Ok(Some(id))
     }
 }
@@ -76,7 +76,7 @@ impl Block for Bvh {
         write_simple_list64b(w, g, self.nodes, self.nodes_count, self.nodes_capacity);
         w.zeros(16);
         for v in [self.bb_min, self.bb_max, self.bb_center, self.quantum_inverse, self.quantum] { w.vec4(v); }
-        write_simple_list64(w, g, self.trees, self.trees_count);
+        write_simple_list64(w, g, self.trees, self.trees_count, "BVH trees")?;
         Ok(())
     }
     fn as_any(&self) -> &dyn Any { self } fn as_any_mut(&mut self) -> &mut dyn Any { self }

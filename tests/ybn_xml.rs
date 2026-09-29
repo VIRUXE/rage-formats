@@ -40,7 +40,8 @@ fn a_document_without_bounds_is_an_error() {
 
 #[test]
 fn the_checked_build_returns_the_file_and_its_xml() {
-    let (bytes, xml) = rage_formats::build_ybn_from_xml_checked(XML).unwrap();
-    assert_eq!(bytes, build_ybn_from_xml(XML).unwrap());
-    assert_same_xml(&xml, XML);
+    let built = rage_formats::build_ybn_from_xml_checked(XML).unwrap();
+    assert_eq!(built.bytes, build_ybn_from_xml(XML).unwrap());
+    assert_same_xml(&built.xml, XML);
+    assert!(built.warnings.is_empty());
 }

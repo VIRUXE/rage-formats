@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use super::bounds::BoundBlock;
 use super::base::{read_pages_info, read_simple_list64, read_string_block, read_struct_array, write_file_base, write_simple_list64, PagesInfo, StringBlock, StructArray};
@@ -90,7 +90,7 @@ impl DrawableGeometry {
     /// `DrawableGeometry.Read`; the shader id and bounds are the parent model's to fill in.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4 + 8 + 8);
         let vb_ptr = c.u64(); c.skip(3 * 8);
@@ -104,7 +104,7 @@ impl DrawableGeometry {
         let index_buffer = IndexBuffer::read(r, g, ib_ptr)?;
         let bone_ids = r.u16s(bone_ptr, bone_count as usize)?;
         let id = g.add(DrawableGeometry { vft, vertex_buffer, index_buffer, bone_ids, shader_id: 0, aabb_min: Vec4::default(), aabb_max: Vec4::default() });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for DrawableGeometry {
@@ -118,15 +118,16 @@ impl Block for DrawableGeometry {
         let indices = self.index_buffer.and_then(|i| g.get::<IndexBuffer>(i).indices)
             .map_or(0, |i| g.get::<StructArray<u16>>(i).items.len() as u32);
         let data = self.vertex_data(g);
-        let vertices = data.map_or(0, |d| g.get::<VertexData>(d).count as u16);
+        let vertices = count_u16(data.map_or(0, |d| g.get::<VertexData>(d).count), "vertices in a geometry")?;
         let stride = self.vertex_buffer.map_or(0, |v| g.get::<VertexBuffer>(v).stride);
         let ids = self.bone_ids.len();
+        let ids16 = count_u16(ids, "bone ids in a geometry")?;
         let bone_ptr = if ids == 0 { 0 } else { w.position() + 152 + if ids > 4 { 8 } else { 0 } };
         w.u32(self.vft); w.u32(1); w.u64(0); w.u64(0);
         w.u64(g.ptr(self.vertex_buffer)); w.zeros(3 * 8);
         w.u64(g.ptr(self.index_buffer)); w.zeros(3 * 8);
         w.u32(indices); w.u32(indices / 3); w.u16(vertices); w.u16(INDICES_PER_PRIMITIVE); w.u32(0);
-        w.u64(bone_ptr); w.u16(stride); w.u16(ids as u16); w.u32(0);
+        w.u64(bone_ptr); w.u16(stride); w.u16(ids16); w.u32(0);
         w.u64(g.ptr(data)); w.zeros(3 * 8);
         if ids > 4 { w.u64(0); }
         for &b in &self.bone_ids { w.u16(b); }
@@ -223,7 +224,7 @@ impl DrawableModel {
     /// `DrawableModel.Read`: the geometries take their shader index and box from the model.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4);
         let geoms_ptr = c.u64();
@@ -254,7 +255,7 @@ impl DrawableModel {
         let mut model = Self::new(g, geometries, skeleton_binding, render_mask_flags);
         model.vft = vft;
         let id = g.add(model);
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for DrawableModel {
@@ -262,14 +263,15 @@ impl Block for DrawableModel {
     fn parts(&self) -> Vec<(usize, BlockId)> { self.layout().2.into_iter().zip(self.geometries.iter().copied()).collect() }
     fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
         let n = self.geometries.len();
+        let n16 = count_u16(n, "geometries in a model")?;
         let base = w.position();
         let (pointers, bounds, _, _) = self.layout();
         w.u32(self.vft); w.u32(1);
         w.u64(base + pointers as u64);
-        w.u16(n as u16); w.u16(n as u16); w.u32(0);
+        w.u16(n16); w.u16(n16); w.u32(0);
         w.u64(base + bounds as u64);
         w.u64(base + 48);
-        w.u32(self.skeleton_binding); w.u16(self.render_mask_flags); w.u16(n as u16);
+        w.u32(self.skeleton_binding); w.u16(self.render_mask_flags); w.u16(n16);
         for s in self.shader_mapping(g) { w.u16(s); }
         if n == 1 { w.zeros(6); } else { w.pad16(); }
         for &geom in &self.geometries { w.u64(g.position(geom)); }
@@ -349,7 +351,7 @@ impl DrawableModelsBlock {
     /// other than the high one (no high models) is that LOD's list, not an extra one.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64, lods: [u64; 4]) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let read_list = |r: &mut Reader, g: &mut Graph, ptr: u64| -> Result<Option<Vec<BlockId>>> {
             if ptr == 0 { return Ok(None); }
             let mut c = r.cursor(ptr)?;
@@ -366,7 +368,7 @@ impl DrawableModelsBlock {
         let vlow = read_list(r, g, lods[3])?;
         let extra = if lods.contains(&va) { None } else { read_list(r, g, va)? };
         let id = g.add(Self::new(g, high, med, low, vlow, extra));
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for DrawableModelsBlock {
@@ -379,7 +381,8 @@ impl Block for DrawableModelsBlock {
         for list in self.lists().into_iter().flatten() {
             w.pad16();
             // `ResourcePointerListHeader`: the pointer array right after it, count, capacity
-            w.u64(w.position() + 16); w.u16(list.len() as u16); w.u16(list.len() as u16); w.u32(0);
+            let n = count_u16(list.len(), "models in a LOD list")?;
+            w.u64(w.position() + 16); w.u16(n); w.u16(n); w.u32(0);
             for &m in list { w.u64(g.position(m)); }
             for &m in list {
                 w.pad16();
@@ -482,10 +485,11 @@ impl Drawable {
         Ok(())
     }
 
-    /// `Drawable.ReadXml`: `n` is the `<Drawable>` element.
-    pub fn read_xml(n: Node, g: &mut Graph, dds_dir: Option<&Path>) -> Result<BlockId> {
-        let shader_group = match child(n, "ShaderGroup") { Some(s) => Some(ShaderGroup::read_xml(s, g, dds_dir)?), None => None };
-        let skeleton = match child(n, "Skeleton") { Some(s) => Some(Skeleton::read_xml(s, g)?), None => None };
+    /// `Drawable.ReadXml`: `n` is the `<Drawable>` element. What CodeWalker accepts silently but the
+    /// game may not (a texture that is not embedded, a bone without a name) is added to `warnings`.
+    pub fn read_xml(n: Node, g: &mut Graph, dds_dir: Option<&Path>, warnings: &mut Vec<String>) -> Result<BlockId> {
+        let shader_group = match child(n, "ShaderGroup") { Some(s) => Some(ShaderGroup::read_xml(s, g, dds_dir, warnings)?), None => None };
+        let skeleton = match child(n, "Skeleton") { Some(s) => Some(Skeleton::read_xml(s, g, warnings)?), None => None };
         let joints = match child(n, "Joints") { Some(j) => Some(Joints::read_xml(j, g)?), None => None };
         // An absent or empty list is `None` (`XmlMeta.ReadItemArray`).
         let mut list = |tag: &str| -> Result<Option<Vec<BlockId>>> {
@@ -498,6 +502,12 @@ impl Drawable {
         let low = list("DrawableModelsLow")?;
         let vlow = list("DrawableModelsVeryLow")?;
         let extra = list("DrawableModelsX")?;
+        // The extra list is read from the models block's start, which is where the first LOD list is written:
+        // next to any LOD list it would be written but never read back.
+        let lods = [("DrawableModelsHigh", &high), ("DrawableModelsMedium", &med), ("DrawableModelsLow", &low), ("DrawableModelsVeryLow", &vlow)];
+        if let (Some(_), Some((tag, _))) = (&extra, lods.iter().find(|(_, l)| l.is_some())) {
+            bail!("<DrawableModelsX> cannot be built next to <{tag}>: the extra model list is only read back when it is the drawable's only model list");
+        }
         let models = if [&high, &med, &low, &vlow, &extra].iter().all(|l| l.is_none()) { None } else { Some(g.add(DrawableModelsBlock::new(g, high, med, low, vlow, extra))) };
         let pages = Some(g.add(PagesInfo::default()));
         let name = Some(g.add(StringBlock(child_text(n, "Name"))));
@@ -524,7 +534,7 @@ impl Drawable {
     /// `Drawable.Read` (and `DrawableBase.Read`).
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4);
         let pages_ptr = c.u64();
@@ -555,7 +565,7 @@ impl Drawable {
             vft, pages, shader_group, skeleton, joints, bounding_center, bounding_sphere_radius, bounding_box_min, bounding_box_max,
             lod_dist, render_mask_flags, models, name, lights, lights_count: lights_count as usize, bound,
         });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for Drawable {
@@ -579,7 +589,7 @@ impl Block for Drawable {
         w.u16(0); w.u16(self.models.map_or(0, |m| g.length(m).div_ceil(16)) as u16); w.u32(0);
         w.u64(g.ptr(self.models));
         w.u64(g.ptr(self.name));
-        write_simple_list64(w, g, self.lights, lights);
+        write_simple_list64(w, g, self.lights, lights, "lights")?;
         w.u64(0);
         w.u64(g.ptr(self.bound));
         Ok(())

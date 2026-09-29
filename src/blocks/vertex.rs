@@ -106,11 +106,11 @@ impl VertexDeclaration {
     }
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let d = Self { flags: c.u32(), stride: c.u16(), unknown_6h: c.u8(), count: c.u8(), types: c.u64() };
         c.check()?;
-        let id = g.add(d); r.cache(va, id); Ok(Some(id))
+        let id = g.add(d); r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for VertexDeclaration {
@@ -202,10 +202,10 @@ impl VertexData {
     /// `ReadBlockAt<VertexData>`: `count * stride` bytes, one block per address.
     fn read(r: &mut Reader, g: &mut Graph, va: u64, stride: usize, count: usize) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let len = stride.checked_mul(count).ok_or_else(|| anyhow::anyhow!("{count} vertices of {stride} bytes overflow"))?;
         let bytes = r.bytes(va, len)?;
-        let id = g.add(VertexData { bytes, stride, count }); r.cache(va, id); Ok(Some(id))
+        let id = g.add(VertexData { bytes, stride, count }); r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for VertexData {
@@ -249,7 +249,7 @@ impl VertexBuffer {
     }
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4);
         let stride = c.u16(); let flags = c.u16(); c.skip(4);
@@ -260,7 +260,7 @@ impl VertexBuffer {
         let info = VertexDeclaration::read(r, g, pinfo)?;
         let data1 = VertexData::read(r, g, p1, stride as usize, count as usize)?;
         let data2 = VertexData::read(r, g, p2, stride as usize, count as usize)?;
-        let id = g.add(VertexBuffer { vft, stride, flags, data1, data2, count, info }); r.cache(va, id); Ok(Some(id))
+        let id = g.add(VertexBuffer { vft, stride, flags, data1, data2, count, info }); r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for VertexBuffer {
@@ -301,14 +301,14 @@ impl IndexBuffer {
     }
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4);
         let count = c.u32(); c.skip(4);
         let p = c.u64();
         c.check()?;
         let indices = read_struct_array::<u16>(r, g, p, count as usize)?;
-        let id = g.add(IndexBuffer { vft, indices, count }); r.cache(va, id); Ok(Some(id))
+        let id = g.add(IndexBuffer { vft, indices, count }); r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for IndexBuffer {

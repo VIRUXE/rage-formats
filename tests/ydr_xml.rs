@@ -94,8 +94,50 @@ fn a_drawable_with_a_none_bound_has_none() {
 }
 
 #[test]
-fn the_checked_build_returns_the_file_and_its_xml() {
-    let (bytes, xml) = rage_formats::build_ydr_from_xml_checked(XML, None).unwrap();
-    assert_eq!(bytes, build_ydr_from_xml(XML, None).unwrap());
-    assert_eq!(xml, XML);
+fn the_checked_build_returns_the_file_its_xml_and_the_warnings() {
+    let built = rage_formats::build_ydr_from_xml_checked(XML, None).unwrap();
+    assert_eq!(built.bytes, build_ydr_from_xml(XML, None).unwrap());
+    assert_eq!(built.xml, XML);
+    assert_eq!(built.warnings, ["shader 0 parameter DiffuseSampler: texture 'missing_tex' is not embedded (resolved at runtime from the archetype's txd)"]);
+}
+
+#[test]
+fn a_bone_without_a_name_is_a_warning() {
+    let skeleton = "  <Skeleton>\n    <Unknown1C value=\"0\" />\n    <Unknown50 value=\"0\" />\n    <Unknown54 value=\"0\" />\n    <Unknown58 value=\"0\" />\n    <Bones>\n      <Item>\n        <Name>root</Name>\n        <Tag value=\"0\" />\n        <Index value=\"0\" />\n        <ParentIndex value=\"-1\" />\n        <SiblingIndex value=\"-1\" />\n        <Flags>None</Flags>\n        <Translation x=\"0\" y=\"0\" z=\"0\" />\n        <Rotation x=\"0\" y=\"0\" z=\"0\" w=\"1\" />\n        <Scale x=\"1\" y=\"1\" z=\"1\" />\n        <TransformUnk x=\"0\" y=\"0\" z=\"0\" w=\"0\" />\n      </Item>\n      <Item>\n        <Name />\n        <Tag value=\"1\" />\n        <Index value=\"1\" />\n        <ParentIndex value=\"0\" />\n        <SiblingIndex value=\"-1\" />\n        <Flags>None</Flags>\n        <Translation x=\"0\" y=\"0\" z=\"0\" />\n        <Rotation x=\"0\" y=\"0\" z=\"0\" w=\"1\" />\n        <Scale x=\"1\" y=\"1\" z=\"1\" />\n        <TransformUnk x=\"0\" y=\"0\" z=\"0\" w=\"0\" />\n      </Item>\n    </Bones>\n  </Skeleton>\n";
+    let xml = XML.replace("  <DrawableModelsHigh>", &format!("{skeleton}  <DrawableModelsHigh>"));
+    let built = rage_formats::build_ydr_from_xml_checked(&xml, None).unwrap();
+    assert_eq!(built.warnings.len(), 2, "{:?}", built.warnings);
+    assert_eq!(built.warnings[1], "bone 1: no name");
+}
+
+#[test]
+fn a_geometry_with_more_vertices_than_a_16_bit_count_is_an_error() {
+    let rows = "              0 0 0   0 0 1   255 255 255 255   0 0\n".repeat(65536);
+    let open = "            <Data>\n";
+    let start = XML.find(open).unwrap() + open.len();
+    let end = XML.find("            </Data>\n          </VertexBuffer>").unwrap();
+    let xml = format!("{}{rows}{}", &XML[..start], &XML[end..]);
+    let err = format!("{:#}", build_ydr_from_xml(&xml, None).unwrap_err());
+    assert!(err.contains("65536 vertices in a geometry exceeds 65535"), "{err}");
+}
+
+#[test]
+fn only_a_drawable_document_builds_a_drawable() {
+    let err = format!("{:#}", build_ydr_from_xml(include_str!("fixtures/composite.ybn.xml"), None).unwrap_err());
+    assert!(err.contains("root element is <BoundsFile>, not <Drawable>"), "{err}");
+    assert!(rage_formats::build_ybn_from_xml(XML).unwrap_err().to_string().contains("root element is <Drawable>, not <BoundsFile> or <Bounds>"));
+}
+
+#[test]
+fn an_extra_model_list_next_to_a_lod_list_is_a_clear_error() {
+    let m0 = XML.find("  <DrawableModelsHigh>").unwrap();
+    let m1 = XML.find("  </DrawableModelsHigh>\n").unwrap() + "  </DrawableModelsHigh>\n".len();
+    let high = &XML[m0..m1];
+    let extra = high.replace("DrawableModelsHigh", "DrawableModelsX");
+    let both = format!("{}{high}{extra}{}", &XML[..m0], &XML[m1..]);
+    let err = format!("{:#}", build_ydr_from_xml(&both, None).unwrap_err());
+    assert!(err.contains("<DrawableModelsX> cannot be built next to <DrawableModelsHigh>"), "{err}");
+    let alone = format!("{}{extra}{}", &XML[..m0], &XML[m1..]);
+    let built = rage_formats::build_ydr_from_xml_checked(&alone, None).unwrap();
+    assert_eq!(built.xml, alone, "on its own the extra list round-trips");
 }

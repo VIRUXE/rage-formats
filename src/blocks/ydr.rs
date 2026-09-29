@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use super::bounds::BoundBlock;
 use super::drawable::Drawable;
 use super::xml::XmlOut;
-use super::{BlockId, Graph, Reader};
+use super::{BlockId, Built, Graph, Reader};
 use crate::names::NameTable;
 use crate::resource::SYSTEM_BASE;
 
@@ -43,21 +43,32 @@ pub fn dump_ydr_xml(file: &[u8], names: &NameTable, dds_dir: Option<&Path>) -> R
     xml_of(&g, root, names, dds_dir)
 }
 
+/// The `<Drawable>` document read into a graph; anything else at the root is an error.
+fn read_ydr_xml(doc: &roxmltree::Document, dds_dir: Option<&Path>, warnings: &mut Vec<String>) -> Result<(Graph, BlockId)> {
+    let node = doc.root_element();
+    let tag = node.tag_name().name();
+    if tag != "Drawable" { bail!("the XML's root element is <{tag}>, not <Drawable>: it is not a drawable"); }
+    let mut g = Graph::new();
+    let root = Drawable::read_xml(node, &mut g, dds_dir, warnings)?;
+    Ok((g, root))
+}
+
 /// `XmlYdr.GetYdr` then a write: the `.ydr` for a `<Drawable>` document.
 pub fn build_ydr_from_xml(xml: &str, dds_dir: Option<&Path>) -> Result<Vec<u8>> {
     let doc = roxmltree::Document::parse(xml).context("the XML is not well formed")?;
-    let mut g = Graph::new();
-    let root = Drawable::read_xml(doc.root_element(), &mut g, dds_dir)?;
+    let (mut g, root) = read_ydr_xml(&doc, dds_dir, &mut Vec::new())?;
     write_ydr(&mut g, root)
 }
 
 /// [`build_ydr_from_xml`], then reads the bytes back and compares their XML with that of the written graph
-/// (taken after the write, which orders BVH polygons). Returns the file and that XML; a file that does not
-/// read back identically is an error, never handed over.
-pub fn build_ydr_from_xml_checked(xml: &str, dds_dir: Option<&Path>) -> Result<(Vec<u8>, String)> {
+/// (taken after the write, which orders BVH polygons). Returns the file, that XML and the warnings for what
+/// CodeWalker accepts silently (a texture that is not embedded, a bone without a name); a file that does not
+/// read back identically is an error, never handed over. The comparison is of XML dumped with no DDS folder,
+/// so texture pixels are outside it.
+pub fn build_ydr_from_xml_checked(xml: &str, dds_dir: Option<&Path>) -> Result<Built> {
     let doc = roxmltree::Document::parse(xml).context("the XML is not well formed")?;
-    let mut g = Graph::new();
-    let root = Drawable::read_xml(doc.root_element(), &mut g, dds_dir)?;
+    let mut warnings = Vec::new();
+    let (mut g, root) = read_ydr_xml(&doc, dds_dir, &mut warnings)?;
     let bytes = write_ydr(&mut g, root)?;
     let names = NameTable::core();
     let expected = xml_of(&g, root, &names, None)?;
@@ -65,5 +76,5 @@ pub fn build_ydr_from_xml_checked(xml: &str, dds_dir: Option<&Path>) -> Result<(
     if let Some(msg) = super::xml::first_difference(&expected, &back) {
         bail!("the written file does not read back identically: {msg}");
     }
-    Ok((bytes, expected))
+    Ok(Built { bytes, xml: expected, warnings })
 }

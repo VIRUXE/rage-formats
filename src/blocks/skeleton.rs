@@ -73,7 +73,7 @@ impl Bone {
 
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let rotation = c.vec4(); let translation = c.vec3(); c.skip(4);
         let scale = c.vec3(); c.skip(4);
@@ -84,7 +84,7 @@ impl Bone {
         c.check()?;
         let name = read_string_block(r, g, name_ptr)?;
         let id = g.add(Bone { rotation, translation, scale, next_sibling, parent, name, flags, index, tag, transform_unk: Vec4::new(0.0, 0.0, 0.0, 0.0) });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for Bone {
@@ -109,14 +109,14 @@ impl SkeletonBonesBlock {
     /// Reads `count` bones after the 16-byte header at `va`.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64, count: usize) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?; c.skip(16); c.check()?;
         let mut bones = Vec::new();
         for i in 0..count {
             if let Some(b) = Bone::read(r, g, va + 16 + 80 * i as u64)? { bones.push(b); }
         }
         let id = g.add(SkeletonBonesBlock { bones });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for SkeletonBonesBlock {
@@ -137,19 +137,19 @@ impl SkeletonBoneTag {
     /// Reads the entry at `va` and the chain after it (iteratively, sharing entries already read).
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let (mut first, mut prev, mut cur) = (None, None::<BlockId>, va);
         loop {
             let mut c = r.cursor(cur)?;
             let (tag, index, next_ptr) = (c.u32(), c.u32(), c.u64());
             c.check()?;
             let id = g.add(SkeletonBoneTag { tag, index, next: None });
-            r.cache(cur, id);
+            r.cache::<Self>(cur, id);
             if let Some(p) = prev { g.get_mut::<SkeletonBoneTag>(p).next = Some(id); }
             first.get_or_insert(id);
             prev = Some(id);
             if next_ptr == 0 { break; }
-            if let Some(n) = r.cached(next_ptr) { g.get_mut::<SkeletonBoneTag>(id).next = Some(n); break; }
+            if let Some(n) = r.cached_as::<Self>(next_ptr)? { g.get_mut::<SkeletonBoneTag>(id).next = Some(n); break; }
             cur = next_ptr;
         }
         Ok(first)
@@ -304,9 +304,15 @@ impl Skeleton {
         }
     }
 
-    /// `Skeleton.ReadXml`: the bones of `n`'s `Bones` items, then the derived tables.
-    pub fn read_xml(n: Node, g: &mut Graph) -> Result<BlockId> {
-        let bones: Vec<Bone> = items(n, "Bones").into_iter().map(|i| Bone::read_xml(i, g)).collect();
+    /// `Skeleton.ReadXml`: the bones of `n`'s `Bones` items, then the derived tables. A bone with no
+    /// (or an empty) `Name` adds a line to `warnings` (CodeWalker accepts it silently).
+    pub fn read_xml(n: Node, g: &mut Graph, warnings: &mut Vec<String>) -> Result<BlockId> {
+        let mut bones = Vec::new();
+        for (i, item) in items(n, "Bones").into_iter().enumerate() {
+            let bone = Bone::read_xml(item, g);
+            if bone.name.is_none_or(|s| g.get::<StringBlock>(s).0.is_empty()) { warnings.push(format!("bone {i}: no name")); }
+            bones.push(bone);
+        }
         Ok(Self::from_bones(
             g, bones,
             child_attr_u32(n, "Unknown1C", "value"), child_attr_u32(n, "Unknown50", "value"),
@@ -317,7 +323,7 @@ impl Skeleton {
     /// `Skeleton.Read`; each bone's `TransformUnk` is column 4 of its stored local transform.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4 + 8);
         let tags_ptr = c.u64();
@@ -334,16 +340,20 @@ impl Skeleton {
 
         let bone_tags = if tags_ptr == 0 {
             None
-        } else if let Some(id) = r.cached(tags_ptr) {
+        } else if let Some(id) = r.cached_as::<PointerArray64>(tags_ptr)? {
             Some(id)
         } else {
             let ptrs = read_pointer_array64(r, g, tags_ptr, bone_tags_capacity as usize)?;
             let items = ptrs.into_iter().map(|p| SkeletonBoneTag::read(r, g, p)).collect::<Result<Vec<_>>>()?;
             let id = g.add(PointerArray64 { items });
-            r.cache(tags_ptr, id);
+            r.cache::<PointerArray64>(tags_ptr, id);
             Some(id)
         };
-        let bones = if bones_ptr != 0 { SkeletonBonesBlock::read(r, g, bones_ptr - 16, bones_count as usize)? } else { None };
+        // the pointer is to the first bone, 16 bytes into the bones block
+        let bones = if bones_ptr != 0 {
+            let block = bones_ptr.checked_sub(16).with_context(|| format!("the skeleton at {va:#x} has a bones pointer {bones_ptr:#x} below 16"))?;
+            SkeletonBonesBlock::read(r, g, block, bones_count as usize)?
+        } else { None };
         let transforms_inv = read_struct_array::<Mat4>(r, g, inv_ptr, bones_count as usize)?;
         let transforms = read_struct_array::<Mat4>(r, g, trans_ptr, bones_count as usize)?;
         let parent_indices = read_struct_array::<i16>(r, g, parents_ptr, bones_count as usize)?;
@@ -357,7 +367,7 @@ impl Skeleton {
             vft, bone_tags, bone_tags_capacity, unknown_1ch, bones, transforms_inv, transforms, parent_indices, child_indices,
             unknown_50h, unknown_54h, unknown_58h, bones_count, child_indices_count,
         });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for Skeleton {
@@ -366,9 +376,9 @@ impl Block for Skeleton {
         [self.bone_tags, self.bones, self.transforms_inv, self.transforms, self.parent_indices, self.child_indices].into_iter().flatten().collect()
     }
     fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
-        let capacity = self.bone_tags.map_or(0, |t| g.get::<PointerArray64>(t).items.len()) as u16;
-        let count = self.bones.map_or(0, |b| g.get::<SkeletonBonesBlock>(b).bones.len()) as u16;
-        let child_count = self.child_indices.map_or(0, |c| g.get::<StructArray<i16>>(c).items.len()) as u16;
+        let capacity = count_u16(self.bone_tags.map_or(0, |t| g.get::<PointerArray64>(t).items.len()), "bone tag buckets")?;
+        let count = count_u16(self.bones.map_or(0, |b| g.get::<SkeletonBonesBlock>(b).bones.len()), "bones")?;
+        let child_count = count_u16(self.child_indices.map_or(0, |c| g.get::<StructArray<i16>>(c).items.len()), "child index entries")?;
         w.u32(self.vft); w.u32(1); w.u64(0);
         w.u64(g.ptr(self.bone_tags)); w.u16(capacity); w.u16(count.min(capacity));
         w.u32(self.unknown_1ch);
@@ -519,7 +529,7 @@ impl Joints {
 
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4 + 8);
         let (rot_ptr, trans_ptr) = (c.u64(), c.u64());
@@ -530,15 +540,15 @@ impl Joints {
         let rotation_limits = read_struct_array::<JointRotationLimit>(r, g, rot_ptr, rot_count as usize)?;
         let translation_limits = read_struct_array::<JointTranslationLimit>(r, g, trans_ptr, trans_count as usize)?;
         let id = g.add(Joints { vft, rotation_limits, translation_limits, rot_count, trans_count });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for Joints {
     fn length(&self) -> usize { 64 }
     fn references(&self, _g: &Graph) -> Vec<BlockId> { self.rotation_limits.into_iter().chain(self.translation_limits).collect() }
     fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
-        let rot = self.rotation_limits.map_or(0, |r| g.get::<StructArray<JointRotationLimit>>(r).items.len()) as u16;
-        let trans = self.translation_limits.map_or(0, |t| g.get::<StructArray<JointTranslationLimit>>(t).items.len()) as u16;
+        let rot = count_u16(self.rotation_limits.map_or(0, |r| g.get::<StructArray<JointRotationLimit>>(r).items.len()), "joint rotation limits")?;
+        let trans = count_u16(self.translation_limits.map_or(0, |t| g.get::<StructArray<JointTranslationLimit>>(t).items.len()), "joint translation limits")?;
         w.u32(self.vft); w.u32(1); w.u64(0);
         w.u64(g.ptr(self.rotation_limits)); w.u64(g.ptr(self.translation_limits));
         w.u64(0); w.u64(0);
@@ -634,7 +644,7 @@ mod tests {
         let body = a.replacen("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n", "", 1);
         let text = format!("<Skeleton>{body}</Skeleton>"); let doc = roxmltree::Document::parse(&text).unwrap();
         let mut g3 = Graph::new();
-        let sk3 = Skeleton::read_xml(doc.root_element(), &mut g3).unwrap();
+        let sk3 = Skeleton::read_xml(doc.root_element(), &mut g3, &mut Vec::new()).unwrap();
         assert_eq!(g3.length(sk3), 112);
         assert_eq!(xml(&g3, sk3), a);
     }

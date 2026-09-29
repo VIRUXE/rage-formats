@@ -440,7 +440,7 @@ impl Octants {
     /// Reads the counts at `va` and the lists through the pointer array at `items_ptr`.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64, items_ptr: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let counts: [u32; 8] = std::array::from_fn(|_| c.u32());
         c.check()?;
@@ -449,7 +449,7 @@ impl Octants {
         let mut items: [Vec<u32>; 8] = Default::default();
         for i in 0..8 { items[i] = r.u32s(ptrs[i], counts[i] as usize)?; }
         let id = g.add(Octants { items });
-        r.cache(va, id);
+        r.cache::<Self>(va, id);
         Ok(Some(id))
     }
 }
@@ -1033,8 +1033,8 @@ impl Geometry {
         w.u64(g.ptr(self.materials_block)); w.u64(g.ptr(self.material_colours_block));
         w.zeros(24);
         w.u64(g.ptr(self.polygon_materials_block));
-        w.u8(self.materials.len() as u8);
-        w.u8(if self.material_colours_block.is_some() { self.material_colours.len() as u8 } else { 0 });
+        w.u8(count_u8(self.materials.len(), "materials in a geometry bound")?);
+        w.u8(if self.material_colours_block.is_some() { count_u8(self.material_colours.len(), "material colours in a geometry bound")? } else { 0 });
         w.u16(0); w.zeros(12);
         Ok(())
     }
@@ -1204,7 +1204,8 @@ impl Composite {
         let transforms = g.ptr(self.transforms_block);
         w.u64(g.ptr(self.children_block)); w.u64(transforms); w.u64(transforms); // ChildrenTransformation2Pointer falls back to the first
         w.u64(g.ptr(self.bboxes_block)); w.u64(g.ptr(self.flags1_block)); w.u64(g.ptr(self.flags2_block));
-        w.u16(self.children.len() as u16); w.u16(self.children.len() as u16); w.u32(0);
+        let n = count_u16(self.children.len(), "children in a composite bound")?;
+        w.u16(n); w.u16(n); w.u32(0);
         w.u64(g.ptr(self.bvh));
         Ok(())
     }
@@ -1325,7 +1326,7 @@ impl BoundBlock {
     /// and flags itself; a composite inside a composite is refused (none exists, and a cycle would never end).
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64, parent: Option<&CompositeCtx>) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4);
         let pages_ptr = c.u64();
@@ -1368,7 +1369,7 @@ impl BoundBlock {
             _ => unreachable!("kind {kind:?} was checked above"),
         };
         let id = g.add(block);
-        r.cache(va, id);
+        r.cache::<Self>(va, id);
         Ok(Some(id))
     }
 

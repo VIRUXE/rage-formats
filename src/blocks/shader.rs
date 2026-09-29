@@ -28,7 +28,8 @@ impl TextureRef {
     /// A texture parameter's pointer: a block already in the pool (a dictionary texture) or a new `TextureRef`.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if r.cached_is::<Texture>(va) { return r.cached_as::<Texture>(va); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         c.skip(40);
         let name_ptr = c.u64();
@@ -39,7 +40,7 @@ impl TextureRef {
         let name = read_string_block(r, g, name_ptr)?;
         let name_hash = name.map_or(0, |n| rage_joaat(&g.get::<StringBlock>(n).0.to_lowercase()));
         let id = g.add(TextureRef { name, name_hash, unknown_32h });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for TextureRef {
@@ -162,7 +163,11 @@ impl ShaderParametersBlock {
                     let v: Vec<Vec4> = item.children().filter(|c| c.is_element() && c.tag_name().name() == "Value")
                         .map(|c| Vec4::new(attr_f32(c, "x"), attr_f32(c, "y"), attr_f32(c, "z"), attr_f32(c, "w"))).collect();
                     // an array with no values has data type 0, like a texture
-                    if v.is_empty() { (0, ParamData::Texture(None)) } else { (v.len() as u8, ParamData::Vectors(v)) }
+                    if v.is_empty() { (0, ParamData::Texture(None)) } else {
+                        let n = count_u8(v.len(), "values in an array parameter")
+                            .with_context(|| format!("shader parameter {}", attr_str(item, "name")))?;
+                        (n, ParamData::Vectors(v))
+                    }
                 }
                 _ => (0, ParamData::Texture(None)),
             };
@@ -173,7 +178,7 @@ impl ShaderParametersBlock {
 
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64, count: usize) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let mut recs = Vec::with_capacity(count);
         for _ in 0..count {
@@ -201,7 +206,7 @@ impl ShaderParametersBlock {
             .map(|(((data_type, unknown_1h, _), data), name_hash)| ShaderParam { data_type, unknown_1h, name_hash, data })
             .collect();
         let id = g.add(ShaderParametersBlock { params, vec_blocks });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 
@@ -282,7 +287,7 @@ impl ShaderFx {
 
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let params_ptr = c.u64();
         let name_hash = c.u32(); c.skip(4);
@@ -293,7 +298,7 @@ impl ShaderFx {
         c.check()?;
         let params = ShaderParametersBlock::read(r, g, params_ptr, count as usize)?;
         let id = g.add(ShaderFx { name_hash, file_name_hash, render_bucket, render_bucket_mask, params, unknown_12h });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for ShaderFx {
@@ -302,8 +307,9 @@ impl Block for ShaderFx {
     fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
         let (count, size, data_size, textures) = self.params.map_or((0, 0, 0, 0), |p| {
             let p = g.get::<ShaderParametersBlock>(p);
-            (p.params.len() as u8, p.parameters_size(), p.parameters_data_size(), p.texture_count())
+            (p.params.len(), p.parameters_size(), p.parameters_data_size(), p.texture_count())
         });
+        let count = count_u8(count, "parameters in a shader")?;
         w.u64(g.ptr(self.params));
         w.u32(self.name_hash); w.u32(0);
         w.u8(count); w.u8(self.render_bucket); w.u16(self.unknown_12h);
@@ -322,12 +328,14 @@ pub struct ShaderGroup {
     /// 1080113136.
     pub vft: u32,
     pub dictionary: Option<BlockId>,
-    /// A `PointerArray64` of [`ShaderFx`].
+    /// A `PointerArray64` of [`ShaderFx`]; its length is the count written.
     pub shaders: Option<BlockId>,
-    pub count: usize,
 }
 
 impl ShaderGroup {
+    /// The number of shaders: the length of the pointer array (null entries included).
+    pub fn count(&self, g: &Graph) -> usize { self.shaders.map_or(0, |s| g.get::<PointerArray64>(s).items.len()) }
+
     /// `ShaderGroup.WriteXml`: the dictionary (with its DDS files in `dds_dir`), then the shaders.
     pub fn write_xml(&self, x: &mut XmlOut, g: &Graph, names: &NameTable, dds_dir: Option<&Path>) -> Result<()> {
         if let Some(d) = self.dictionary {
@@ -348,8 +356,9 @@ impl ShaderGroup {
         Ok(())
     }
 
-    /// `ShaderGroup.ReadXml`: `n` is the `<ShaderGroup>` node.
-    pub fn read_xml(n: Node, g: &mut Graph, dds_dir: Option<&Path>) -> Result<BlockId> {
+    /// `ShaderGroup.ReadXml`: `n` is the `<ShaderGroup>` node. A texture parameter naming a texture
+    /// that is not in the dictionary adds a line to `warnings` (CodeWalker accepts it silently).
+    pub fn read_xml(n: Node, g: &mut Graph, dds_dir: Option<&Path>, warnings: &mut Vec<String>) -> Result<BlockId> {
         let dictionary = match child(n, "TextureDictionary") {
             Some(d) => {
                 let mut textures = Vec::new();
@@ -361,16 +370,15 @@ impl ShaderGroup {
             None => None,
         };
         let fxs = items(n, "Shaders").into_iter().map(|i| ShaderFx::read_xml(i, g)).collect::<Result<Vec<_>>>()?;
-        let count = fxs.len();
         let shaders = if fxs.is_empty() { None } else { Some(g.add(PointerArray64 { items: fxs.into_iter().map(Some).collect() })) };
-        let sg = ShaderGroup { vft: 1080113136, dictionary, shaders, count };
-        sg.resolve_textures(g);
+        let sg = ShaderGroup { vft: 1080113136, dictionary, shaders };
+        warnings.extend(sg.resolve_textures(g));
         Ok(g.add(sg))
     }
 
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4);
         let dict_ptr = c.u64();
@@ -381,34 +389,46 @@ impl ShaderGroup {
         let dictionary = TextureDictionary::read(r, g, dict_ptr)?;
         let shaders = if shaders_ptr == 0 {
             None
-        } else if let Some(id) = r.cached(shaders_ptr) {
+        } else if let Some(id) = r.cached_as::<PointerArray64>(shaders_ptr)? {
             Some(id)
         } else {
             let ptrs = read_pointer_array64(r, g, shaders_ptr, count)?;
             let items = ptrs.into_iter().map(|p| ShaderFx::read(r, g, p)).collect::<Result<Vec<_>>>()?;
             let id = g.add(PointerArray64 { items });
-            r.cache(shaders_ptr, id);
+            r.cache::<PointerArray64>(shaders_ptr, id);
             Some(id)
         };
-        let id = g.add(ShaderGroup { vft, dictionary, shaders, count });
-        r.cache(va, id); Ok(Some(id))
+        let id = g.add(ShaderGroup { vft, dictionary, shaders });
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 
     /// `ShaderGroup.ReadXml`'s swap: every texture parameter whose name hash is in the dictionary
-    /// points at the dictionary's texture.
-    pub fn resolve_textures(&self, g: &mut Graph) {
-        let (Some(dict), Some(shaders)) = (self.dictionary, self.shaders) else { return };
-        let fxs: Vec<BlockId> = g.get::<PointerArray64>(shaders).items.iter().flatten().copied().collect();
+    /// points at the dictionary's texture. Returns a warning for each parameter left naming a texture
+    /// that is not embedded (the game looks it up in the archetype's texture dictionary instead).
+    pub fn resolve_textures(&self, g: &mut Graph) -> Vec<String> {
+        let Some(shaders) = self.shaders else { return Vec::new() };
+        let fxs: Vec<Option<BlockId>> = g.get::<PointerArray64>(shaders).items.clone();
         let mut swaps = Vec::new();
-        for fx in fxs {
-            let Some(pb) = g.get::<ShaderFx>(fx).params else { continue };
+        let mut missing = Vec::new();
+        for (s, fx) in fxs.into_iter().enumerate() {
+            let Some(pb) = fx.and_then(|fx| g.get::<ShaderFx>(fx).params) else { continue };
             for (i, p) in g.get::<ShaderParametersBlock>(pb).params.iter().enumerate() {
-                if let ParamData::Texture(Some(id)) = p.data {
-                    if let Some(t) = g.get::<TextureDictionary>(dict).lookup(g, texture_info(g, id).1) { swaps.push((pb, i, t)); }
+                let ParamData::Texture(Some(id)) = p.data else { continue };
+                let (name, hash) = texture_info(g, id);
+                match self.dictionary.and_then(|d| g.get::<TextureDictionary>(d).lookup(g, hash)) {
+                    Some(t) => swaps.push((pb, i, t)),
+                    None if !name.is_empty() => missing.push((s, p.name_hash, name.to_owned())),
+                    None => {}
                 }
             }
         }
         for (pb, i, t) in swaps { g.get_mut::<ShaderParametersBlock>(pb).params[i].data = ParamData::Texture(Some(t)); }
+        if missing.is_empty() { return Vec::new(); }
+        let names = NameTable::core();
+        missing.into_iter().map(|(s, param, tex)| format!(
+            "shader {s} parameter {}: texture '{tex}' is not embedded (resolved at runtime from the archetype's txd)",
+            hash_string(param, &names),
+        )).collect()
     }
 }
 impl Block for ShaderGroup {
@@ -418,7 +438,8 @@ impl Block for ShaderGroup {
         w.u32(self.vft); w.u32(1);
         w.u64(g.ptr(self.dictionary));
         w.u64(g.ptr(self.shaders));
-        w.u16(self.count as u16); w.u16(self.count as u16);
+        let count = count_u16(self.count(g), "shaders")?;
+        w.u16(count); w.u16(count);
         w.u32(0); w.u64(0); w.u64(0);
         w.u32(64 / 16); w.u32(0); w.u64(0);
         Ok(())
@@ -462,7 +483,9 @@ mod tests {
         let dir = dds_dir();
         let doc = roxmltree::Document::parse(XML).unwrap();
         let mut g = Graph::new();
-        let sg = ShaderGroup::read_xml(doc.root_element(), &mut g, Some(dir.path())).unwrap();
+        let mut warnings = Vec::new();
+        let sg = ShaderGroup::read_xml(doc.root_element(), &mut g, Some(dir.path()), &mut warnings).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         let sg_ref = g.get::<ShaderGroup>(sg);
         let shaders = g.get::<PointerArray64>(sg_ref.shaders.unwrap());
         let fx = g.get::<ShaderFx>(shaders.items[0].unwrap());
@@ -479,10 +502,12 @@ mod tests {
     #[test]
     fn built_shaders_read_back_sharing_the_dictionary_texture() {
         let dir = dds_dir();
-        let xml = XML.replace("</Parameters>", r#"<Item name="unknownParam" type="Texture" /><Item name="colours" type="Array"><Value x="1" y="0" z="0" w="0"/><Value x="0" y="1" z="0" w="0"/></Item><Item name="loose" type="Texture"><Name>other</Name></Item></Parameters>"#);
+        let xml = XML.replace("</Parameters>", r#"<Item name="unknownParam" type="Texture" /><Item name="colours" type="Array"><Value x="1" y="0" z="0" w="0"/><Value x="0" y="1" z="0" w="0"/></Item><Item name="BumpSampler" type="Texture"><Name>other</Name></Item></Parameters>"#);
         let doc = roxmltree::Document::parse(&xml).unwrap();
         let mut g = Graph::new();
-        let sg = ShaderGroup::read_xml(doc.root_element(), &mut g, Some(dir.path())).unwrap();
+        let mut warnings = Vec::new();
+        let sg = ShaderGroup::read_xml(doc.root_element(), &mut g, Some(dir.path()), &mut warnings).unwrap();
+        assert_eq!(warnings, ["shader 0 parameter BumpSampler: texture 'other' is not embedded (resolved at runtime from the archetype's txd)"]);
         let pages = g.add(PagesInfo::default());
         let file = g.build(sg, pages, 13).unwrap();
 
@@ -490,7 +515,7 @@ mod tests {
         let mut g2 = Graph::new();
         let sg2 = ShaderGroup::read(&mut r, &mut g2, crate::resource::SYSTEM_BASE).unwrap().unwrap();
         let s = g2.get::<ShaderGroup>(sg2);
-        assert_eq!((s.vft, s.count), (1080113136, 1));
+        assert_eq!((s.vft, s.count(&g2)), (1080113136, 1));
         let fx = g2.get::<ShaderFx>(g2.get::<PointerArray64>(s.shaders.unwrap()).items[0].unwrap());
         assert_eq!((fx.name_hash, fx.render_bucket_mask, fx.unknown_12h), (crate::rage_joaat("default"), 0xFF01, 32768));
         let orig = g.get::<ShaderParametersBlock>(g.get::<ShaderFx>(g.get::<PointerArray64>(g.get::<ShaderGroup>(sg).shaders.unwrap()).items[0].unwrap()).params.unwrap());

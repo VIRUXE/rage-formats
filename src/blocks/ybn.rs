@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use super::base::PagesInfo;
 use super::bounds::BoundBlock;
 use super::xml::{child, XmlOut};
-use super::{BlockId, Graph, Reader};
+use super::{BlockId, Built, Graph, Reader};
 use crate::resource::SYSTEM_BASE;
 
 /// Reads a `.ybn` into a graph; returns it with the root bound.
@@ -46,23 +46,27 @@ pub fn build_ybn_from_xml(xml: &str) -> Result<Vec<u8>> {
 }
 
 /// [`build_ybn_from_xml`], then reads the bytes back and compares their XML with that of the written graph
-/// (taken after the write, which orders BVH polygons). Returns the file and that XML; a file that does not
-/// read back identically is an error, never handed over.
-pub fn build_ybn_from_xml_checked(xml: &str) -> Result<(Vec<u8>, String)> {
+/// (taken after the write, which orders BVH polygons). Returns the file and that XML (a bound raises no
+/// warnings; the field is there for symmetry with [`super::ydr::build_ydr_from_xml_checked`]); a file that
+/// does not read back identically is an error, never handed over.
+pub fn build_ybn_from_xml_checked(xml: &str) -> Result<Built> {
     let (g, bytes, root) = build_ybn_graph(xml)?;
     let expected = xml_of(&g, root);
     let back = dump_ybn_xml(&bytes).context("the written file cannot be read back")?;
     if let Some(msg) = super::xml::first_difference(&expected, &back) {
         bail!("the written file does not read back identically: {msg}");
     }
-    Ok((bytes, expected))
+    Ok(Built { bytes, xml: expected, warnings: Vec::new() })
 }
 
 fn build_ybn_graph(xml: &str) -> Result<(Graph, Vec<u8>, BlockId)> {
     let doc = roxmltree::Document::parse(xml).context("the XML is not well formed")?;
     let root = doc.root_element();
-    let node = if root.tag_name().name() == "Bounds" { Some(root) } else { child(root, "Bounds") };
-    let Some(node) = node else { bail!("the XML has no <Bounds> element") };
+    let node = match root.tag_name().name() {
+        "Bounds" => root,
+        "BoundsFile" => child(root, "Bounds").context("the <BoundsFile> has no <Bounds> element")?,
+        tag => bail!("the XML's root element is <{tag}>, not <BoundsFile> or <Bounds>: it is not a bound"),
+    };
     let mut g = Graph::new();
     let Some(bound) = BoundBlock::read_xml(node, &mut g, None)? else { bail!("the XML has a bound of type None") };
     let pages = g.add(PagesInfo::default());

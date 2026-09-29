@@ -52,6 +52,23 @@ fn parse_usage_flags(s: &str) -> u32 {
     match s.trim().parse::<u32>() { Ok(v) => v, Err(_) => parse_flags(s, &USAGE_FLAG_NAMES, |a, b| a | b, 0) }
 }
 
+/// The `.dds` file name for a texture called `name` (`null.dds` for none, as CodeWalker writes): one plain
+/// file name inside the dump folder whatever the name holds. Path separators, `: * ? " < > |` and control
+/// characters become `_`, a leading `..` is dropped, a name left empty or `.` / `..` becomes `_`, and a
+/// Windows device name (`CON`, `NUL`, `COM1`, ...) gets a `_` in front.
+pub fn dds_file_name(name: &str) -> String {
+    if name.is_empty() { return "null.dds".to_owned(); }
+    let mut s: String = name.chars()
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c })
+        .collect();
+    while let Some(rest) = s.strip_prefix("..") { s = rest.to_owned(); }
+    if s.is_empty() || s == "." { s = "_".to_owned(); }
+    let stem = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let numbered = (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit();
+    if ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str()) || numbered { s.insert(0, '_'); }
+    format!("{s}.dds")
+}
+
 /// `TextureData`: the pixel bytes of every mip level in the game's layout (graphics section).
 pub struct TextureData { pub bytes: Vec<u8> }
 
@@ -59,11 +76,11 @@ impl TextureData {
     /// `TextureData.Read`: `stride * height` bytes for the first level, a quarter of that for each next.
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64, stride: u16, height: u16, levels: u8) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let (mut len, mut total) = (stride as usize * height as usize, 0usize);
         for _ in 0..levels { total += len; len /= 4; }
         let bytes = r.bytes(va, total)?;
-        let id = g.add(TextureData { bytes }); r.cache(va, id); Ok(Some(id))
+        let id = g.add(TextureData { bytes }); r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for TextureData {
@@ -119,7 +136,8 @@ impl Texture {
         }
     }
 
-    /// `Texture.WriteXml`; with `dds_dir` the texture is also saved there as `<name>.dds`.
+    /// `Texture.WriteXml`; with `dds_dir` the texture is also saved there as `<name>.dds` (made safe by
+    /// [`dds_file_name`], which also gives the `<FileName>` text).
     pub fn write_xml(&self, x: &mut XmlOut, g: &Graph, dds_dir: Option<&Path>) -> Result<()> {
         let name = self.name_str(g);
         x.string("Name", name);
@@ -131,7 +149,7 @@ impl Texture {
         x.value("Height", self.height);
         x.value("MipLevels", self.levels);
         x.string("Format", self.format.codewalker_name());
-        let file = format!("{}.dds", if name.is_empty() { "null" } else { name });
+        let file = dds_file_name(name);
         x.string("FileName", &file);
         if let Some(dir) = dds_dir {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -175,7 +193,7 @@ impl Texture {
 
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4 + 32);
         let name_ptr = c.u64();
@@ -196,7 +214,7 @@ impl Texture {
             vft, name, name_hash, unknown_32h, usage: (usage_data & 0x1F) as u8, usage_flags: usage_data >> 5, extra_flags,
             width, height, depth, stride, format, levels, data,
         });
-        r.cache(va, id); Ok(Some(id))
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for Texture {
@@ -222,8 +240,8 @@ pub struct TextureDictionary {
     pub vft: u32,
     pub pages: Option<BlockId>,
     pub hashes: Option<BlockId>,
+    /// A `PointerArray64` of [`Texture`]; its length is the count written for both lists.
     pub textures: Option<BlockId>,
-    pub count: usize,
 }
 
 impl TextureDictionary {
@@ -231,14 +249,16 @@ impl TextureDictionary {
     pub fn from_textures(g: &mut Graph, mut textures: Vec<BlockId>) -> BlockId {
         textures.sort_by_key(|&t| g.get::<Texture>(t).name_hash);
         let hashes: Vec<u32> = textures.iter().map(|&t| g.get::<Texture>(t).name_hash).collect();
-        let count = textures.len();
-        let (hashes, textures) = if count == 0 {
+        let (hashes, textures) = if textures.is_empty() {
             (None, None)
         } else {
             (Some(g.add(StructArray { items: hashes })), Some(g.add(PointerArray64 { items: textures.into_iter().map(Some).collect() })))
         };
-        g.add(TextureDictionary { vft: 0, pages: None, hashes, textures, count })
+        g.add(TextureDictionary { vft: 0, pages: None, hashes, textures })
     }
+
+    /// The number of textures: the length of the pointer array (null entries included).
+    pub fn count(&self, g: &Graph) -> usize { self.textures.map_or(0, |t| g.get::<PointerArray64>(t).items.len()) }
 
     fn texture_ids(&self, g: &Graph) -> Vec<Option<BlockId>> {
         self.textures.map_or_else(Vec::new, |t| g.get::<PointerArray64>(t).items.clone())
@@ -281,7 +301,7 @@ impl TextureDictionary {
 
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
-        if let Some(id) = r.cached(va) { return Ok(Some(id)); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
         let vft = c.u32(); c.skip(4);
         let pages_ptr = c.u64(); c.skip(16);
@@ -292,17 +312,17 @@ impl TextureDictionary {
         let hashes = read_struct_array::<u32>(r, g, hashes_ptr, hashes_count as usize)?;
         let textures = if textures_ptr == 0 {
             None
-        } else if let Some(id) = r.cached(textures_ptr) {
+        } else if let Some(id) = r.cached_as::<PointerArray64>(textures_ptr)? {
             Some(id)
         } else {
             let ptrs = read_pointer_array64(r, g, textures_ptr, textures_count as usize)?;
             let items = ptrs.into_iter().map(|p| Texture::read(r, g, p)).collect::<Result<Vec<_>>>()?;
             let id = g.add(PointerArray64 { items });
-            r.cache(textures_ptr, id);
+            r.cache::<PointerArray64>(textures_ptr, id);
             Some(id)
         };
-        let id = g.add(TextureDictionary { vft, pages, hashes, textures, count: textures_count as usize });
-        r.cache(va, id); Ok(Some(id))
+        let id = g.add(TextureDictionary { vft, pages, hashes, textures });
+        r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
 impl Block for TextureDictionary {
@@ -311,8 +331,9 @@ impl Block for TextureDictionary {
     fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
         write_file_base(w, g, self.vft, self.pages);
         w.u32(0); w.u32(0); w.u32(1); w.u32(0);
-        write_simple_list64(w, g, self.hashes, self.count);
-        write_pointer_list64(w, g, self.textures, self.count);
+        let count = self.count(g);
+        write_simple_list64(w, g, self.hashes, count, "textures")?;
+        write_pointer_list64(w, g, self.textures, count, "textures")?;
         Ok(())
     }
     fn as_any(&self) -> &dyn Any { self } fn as_any_mut(&mut self) -> &mut dyn Any { self }
@@ -395,6 +416,38 @@ mod tests {
         let mut x = XmlOut::new(); x.out.clear();
         g.get::<TextureDictionary>(d).write_xml_node(&mut x, &g, "TextureDictionary", None).unwrap();
         assert_eq!(x.out, "<TextureDictionary />\n");
+    }
+
+    #[test]
+    fn dds_file_names_stay_inside_the_folder() {
+        assert_eq!(dds_file_name("wall_a"), "wall_a.dds");
+        assert_eq!(dds_file_name(""), "null.dds");
+        assert_eq!(dds_file_name("../escaped"), "_escaped.dds");
+        assert_eq!(dds_file_name(r"..\..\escaped"), "_.._escaped.dds");
+        assert_eq!(dds_file_name(r"C:\x"), "C__x.dds");
+        assert_eq!(dds_file_name("/abs/x"), "_abs_x.dds");
+        assert_eq!(dds_file_name("a:b"), "a_b.dds");
+        assert_eq!(dds_file_name("a*b?c\"<>|\u{1}"), "a_b_c_____.dds");
+        assert_eq!(dds_file_name(".."), "_.dds");
+        assert_eq!(dds_file_name("."), "_.dds");
+        assert_eq!(dds_file_name("...."), "_.dds");
+        assert_eq!(dds_file_name("con"), "_con.dds");
+        assert_eq!(dds_file_name("com1.x"), "_com1.x.dds");
+        assert_eq!(dds_file_name("console"), "console.dds");
+        for n in ["../escaped", r"C:\x", "a:b", "..", "/abs/x", r"..\..\escaped"] {
+            let f = dds_file_name(n);
+            assert!(!f.contains(['/', '\\']) && std::path::Path::new(&f).components().count() == 1, "{n} -> {f}");
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("dump");
+        let mut g = Graph::new();
+        let t = Texture::from_ytd_texture(&mut g, &crate::ytd::tests::sample_dxt1_4x4("../escaped"), 1, 0, 0, 0);
+        let mut x = XmlOut::new(); x.out.clear();
+        g.get::<Texture>(t).write_xml(&mut x, &g, Some(&dir)).unwrap();
+        assert!(dir.join("_escaped.dds").exists());
+        assert!(!root.path().join("escaped.dds").exists());
+        assert!(x.out.contains("<FileName>_escaped.dds</FileName>"), "{}", x.out);
     }
 
     #[test]

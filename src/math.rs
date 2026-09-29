@@ -1,6 +1,8 @@
 //! Minimal linear algebra types (vectors, 4x4 matrices) for the software renderer.
 //!
-//! No external crate dependency — small, self-contained, column-major matrices.
+//! No external crate dependency — small and self-contained. A [`Mat4`]'s sixteen floats are in D3D
+//! row-major memory order, the way RAGE stores a transform (a point transforms as `p * M`, the
+//! translation in the fourth row); OpenGL would read the same floats as column-major.
 use std::ops::{Add, Sub, Mul, Neg};
 
 // ─── Vec2 ───────────────────────────────────────────────────────────────────
@@ -166,8 +168,8 @@ impl Mul<f32> for Vec4 {
 
 // ─── Mat4 ───────────────────────────────────────────────────────────────────
 
-/// A 4x4 matrix stored column-major, matching OpenGL conventions:
-/// `m[col * 4 + row]`.
+/// A 4x4 matrix in D3D row-major memory order (`p * M`, translation in `m[12..15]`), which is the
+/// same float order as OpenGL's column-major `m[col * 4 + row]` for the transposed matrix.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mat4(pub [f32; 16]);
 
@@ -182,8 +184,8 @@ impl Mat4 {
     }
 
     /// A matrix as RAGE stores it: D3D row-major, applied as `p * M`, with
-    /// the translation in the fourth row. That memory order is exactly this
-    /// type's column-major order, so the floats are taken verbatim.
+    /// the translation in the fourth row. That is this type's memory order,
+    /// so the floats are taken verbatim.
     pub fn from_d3d(rows: [f32; 16]) -> Mat4 {
         Mat4(rows)
     }

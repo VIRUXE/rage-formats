@@ -20,7 +20,7 @@ pub mod xml;
 pub mod ybn;
 pub mod ydr;
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Context, Result};
@@ -30,6 +30,11 @@ use crate::resource::{build_rsc7_with_flags, pack_pages, prepare_rsc7, rsc7_page
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
+
+/// What [`ydr::build_ydr_from_xml_checked`] and [`ybn::build_ybn_from_xml_checked`] return: the file, the XML
+/// it reads back as, and a line for each thing CodeWalker would accept silently but the game may not.
+#[derive(Debug, Clone)]
+pub struct Built { pub bytes: Vec<u8>, pub xml: String, pub warnings: Vec<String> }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section { System, Graphics }
@@ -124,6 +129,15 @@ impl Graph {
     }
 }
 
+/// A count written in a 16-bit field; an error naming `what` when it does not fit.
+pub fn count_u16(n: usize, what: &str) -> Result<u16> {
+    u16::try_from(n).map_err(|_| anyhow::anyhow!("{n} {what} exceeds 65535, the most a 16-bit count holds"))
+}
+/// A count written in an 8-bit field; an error naming `what` when it does not fit.
+pub fn count_u8(n: usize, what: &str) -> Result<u8> {
+    u8::try_from(n).map_err(|_| anyhow::anyhow!("{n} {what} exceeds 255, the most an 8-bit count holds"))
+}
+
 pub struct Writer { data: Vec<u8>, base: u64, pos: usize }
 
 impl Writer {
@@ -149,9 +163,29 @@ impl Writer {
     pub fn into_inner(self) -> Vec<u8> { self.data }
 }
 
+/// A pooled block: its id and the type it was read as.
+#[derive(Clone, Copy)]
+struct Pooled { id: BlockId, ty: TypeId, name: fn() -> &'static str }
+
+/// The name of a block type without module paths: `Texture`, `StructArray<Mat4>`.
+fn short_type_name(full: &str) -> String {
+    let mut out = String::with_capacity(full.len());
+    let mut word = String::new();
+    for c in full.chars().chain(std::iter::once('\0')) {
+        if c.is_alphanumeric() || c == '_' || c == ':' { word.push(c); continue; }
+        out.push_str(word.rsplit("::").next().unwrap_or(""));
+        word.clear();
+        if c != '\0' { out.push(c); }
+    }
+    out
+}
+
 /// `ResourceDataReader`: the two decoded sections plus the block pool keyed by
-/// virtual address, so an address read twice yields the same [`BlockId`].
-pub struct Reader { sys: Vec<u8>, gfx: Vec<u8>, pool: HashMap<u64, BlockId> }
+/// virtual address, so an address read twice yields the same [`BlockId`]. The pool
+/// remembers the type each address was read as: a pointer that lands on a block of
+/// another type (a corrupt or crafted file) is an error, never a block of the wrong type
+/// (a plain array there is read again on its own, see [`base::read_struct_array`]).
+pub struct Reader { sys: Vec<u8>, gfx: Vec<u8>, pool: HashMap<u64, Pooled> }
 
 impl Reader {
     pub fn open(file: &[u8]) -> Result<Reader> { let (sys, gfx) = prepare_rsc7(file)?; Ok(Reader { sys, gfx, pool: HashMap::new() }) }
@@ -183,8 +217,24 @@ impl Reader {
         let end = d[off..].iter().position(|&c| c == 0).map_or(d.len(), |n| off + n);
         Ok(Some(String::from_utf8_lossy(&d[off..end]).into_owned()))
     }
-    pub fn cached(&self, va: u64) -> Option<BlockId> { self.pool.get(&va).copied() }
-    pub fn cache(&mut self, va: u64, id: BlockId) { self.pool.insert(va, id); }
+    /// The block already read at `va` as a `B`; `None` when nothing was read there, an error
+    /// when the address was read as another type (a pointer into a different block).
+    pub fn cached_as<B: Block>(&self, va: u64) -> Result<Option<BlockId>> {
+        match self.pool.get(&va) {
+            None => Ok(None),
+            Some(p) if p.ty == TypeId::of::<B>() => Ok(Some(p.id)),
+            Some(p) => bail!(
+                "block at {va:#x} was already read as {} — a pointer to a {} points into a different block",
+                short_type_name((p.name)()), short_type_name(std::any::type_name::<B>())
+            ),
+        }
+    }
+    /// Whether the block read at `va` is a `B`.
+    pub fn cached_is<B: Block>(&self, va: u64) -> bool { self.pool.get(&va).is_some_and(|p| p.ty == TypeId::of::<B>()) }
+    /// Records that the block at `va` was read as the `B` `id`.
+    pub fn cache<B: Block>(&mut self, va: u64, id: BlockId) {
+        self.pool.insert(va, Pooled { id, ty: TypeId::of::<B>(), name: std::any::type_name::<B> });
+    }
     pub fn structs<T: Pod>(&self, va: u64, count: usize) -> Result<Vec<T>> {
         if va == 0 || count == 0 { return Ok(Vec::new()); }
         let len = count.checked_mul(T::SIZE).with_context(|| format!("{count} items at {va:#x} overflow"))?;
@@ -341,6 +391,54 @@ mod tests {
         assert!(c.check().is_ok());
         c.u64();
         assert!(c.check().unwrap_err().to_string().contains("read past the end"));
+    }
+
+    /// The triangle fixture built, with the root's pointer at `to` copied over the one at `from`
+    /// (offsets into the system section).
+    pub(crate) fn triangle_with_pointer_copied(from: usize, to: usize) -> Vec<u8> {
+        let file = ydr::build_ydr_from_xml(include_str!("../../tests/fixtures/one_triangle.ydr.xml"), None).unwrap();
+        let (mut sys, gfx) = prepare_rsc7(&file).unwrap();
+        let flags = |at: usize| u32::from_le_bytes(file[at..at + 4].try_into().unwrap());
+        let ptr = sys[from..from + 8].to_vec();
+        sys[to..to + 8].copy_from_slice(&ptr);
+        crate::resource::build_rsc7_with_flags(flags(4), flags(8), &sys, flags(12), &gfx)
+    }
+
+    #[test]
+    fn a_pointer_into_a_block_of_another_type_is_an_error_not_a_panic() {
+        // the skeleton pointer (0x18) made equal to the shader group pointer (0x10)
+        let file = triangle_with_pointer_copied(0x10, 0x18);
+        let err = match std::panic::catch_unwind(|| ydr::read_ydr(&file)) {
+            Ok(r) => r.err().expect("a skeleton pointing at the shader group is refused"),
+            Err(_) => panic!("read_ydr panicked"),
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("already read as ShaderGroup") && msg.contains("Skeleton"), "{msg}");
+        assert!(ydr::dump_ydr_xml(&file, &crate::names::NameTable::core(), None).is_err());
+    }
+
+    #[test]
+    fn the_pool_checks_the_type_an_address_was_read_as() {
+        let mut g = Graph::new();
+        let pages = g.add(PagesInfo::default());
+        let name = g.add(StringBlock("hello".into()));
+        let floats = g.add(StructArray { items: vec![1.0f32, 2.0] });
+        let root = g.add(Root { pages, name, floats });
+        let file = g.build(root, pages, 7).unwrap();
+        let mut r = Reader::open(&file).unwrap();
+        let mut g2 = Graph::new();
+        let s = base::read_string_block(&mut r, &mut g2, SYSTEM_BASE + 64).unwrap().unwrap();
+        assert_eq!(r.cached_as::<StringBlock>(SYSTEM_BASE + 64).unwrap(), Some(s));
+        assert!(r.cached_is::<StringBlock>(SYSTEM_BASE + 64) && !r.cached_is::<PagesInfo>(SYSTEM_BASE + 64));
+        let err = r.cached_as::<StructArray<Mat4>>(SYSTEM_BASE + 64).unwrap_err().to_string();
+        assert!(err.contains("already read as StringBlock — a pointer to a StructArray<Mat4> points into a different block"), "{err}");
+        assert!(base::read_pages_info(&mut r, &mut g2, SYSTEM_BASE + 64).is_err(), "a typed block is refused");
+        // a plain array at that address is read on its own, unpooled, as `ResourceDataReader.ReadBlock` does
+        let a = base::read_struct_array::<u16>(&mut r, &mut g2, SYSTEM_BASE + 64, 1).unwrap().unwrap();
+        assert_ne!(a, s);
+        assert_eq!(g2.get::<StructArray<u16>>(a).items.len(), 1);
+        assert!(r.cached_is::<StringBlock>(SYSTEM_BASE + 64));
+        assert_eq!(r.cached_as::<PagesInfo>(SYSTEM_BASE + 8).unwrap(), None);
     }
 
     #[test]
