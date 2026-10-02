@@ -51,9 +51,9 @@ pub use blocks::ydr::{read_ydr, write_ydr, dump_ydr_xml, build_ydr_from_xml, bui
 pub use blocks::ybn::{read_ybn, write_ybn, dump_ybn_xml, build_ybn_from_xml, build_ybn_from_xml_checked};
 pub use blocks::{Graph, BlockId, Built};
 pub use math::{Vec2, Vec3, Vec4, Mat4};
-pub use resource::{build_rsc7, build_rsc7_with_flags, pack_pages, rsc7_page_count, PagedLayout, is_fxap, FXAP_MAGIC, build_rsc7_paged, prepare_rsc7, rsc7_flags_for_pages, rsc7_flags_for_size, resource_size_from_flags, resource_version_from_flags,
+pub use resource::{build_rsc7, build_rsc7_with_flags, pack_pages, rsc7_page_count, PagedLayout, is_fxap, FXAP_MAGIC, build_rsc7_paged, prepare_rsc7, rsc7_flags_for_pages, rsc7_flags_for_size, resource_size_from_flags, resource_version_from_flags, prepare_rsc7_system, inflate_rsc7_system,
                    RSC7_MAGIC, RSC8_MAGIC, SYSTEM_BASE, GRAPHICS_BASE};
-pub use ytd::{parse_ytd, serialize_ytd, full_mip_count, level_size, mip_chain_size, stride_for, to_dds_layout, to_ytd_layout, ytd_chain_size, TextureFormat, YtdTexture, YTD_VERSION};
+pub use ytd::{parse_ytd, parse_ytd_system, serialize_ytd, full_mip_count, level_size, mip_chain_size, stride_for, to_dds_layout, to_ytd_layout, ytd_chain_size, TextureFormat, YtdTexture, YTD_VERSION};
 pub use dds::parse_dds;
 pub use schema::Schema;
 pub use meta_write::{build_meta, Written, META_VERSION};

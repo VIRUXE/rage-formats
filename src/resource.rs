@@ -177,6 +177,44 @@ pub fn vec4_le(b: &[u8], off: usize) -> Vec4 {
     Vec4::new(f32_le(b, off), f32_le(b, off + 4), f32_le(b, off + 8), f32_le(b, off + 12))
 }
 
+/// The system section alone of an RSC7 resource: the structs, names and
+/// pointers, without the graphics pages that hold vertex and pixel data.
+/// Reads only as far as the system section reaches, so a dictionary's
+/// pixel data is never inflated.
+pub fn prepare_rsc7_system(data: &[u8]) -> Result<Vec<u8>> {
+    if data.len() < 16 {
+        bail!("RSC7 data too short");
+    }
+    let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    if magic != RSC7_MAGIC {
+        bail!("Not an RSC7 file (magic = 0x{:08X})", magic);
+    }
+    let system_flags = u32::from_le_bytes(data[8..12].try_into().unwrap());
+    inflate_rsc7_system(&data[16..], system_flags)
+}
+
+/// Inflates the first `resource_size_from_flags(system_flags)` bytes of an
+/// RSC7 body (everything after the 16-byte header) and stops there. A body
+/// that is not a deflate stream is taken as stored.
+pub fn inflate_rsc7_system(body: &[u8], system_flags: u32) -> Result<Vec<u8>> {
+    let sys_size = resource_size_from_flags(system_flags);
+    let mut out = Vec::with_capacity(sys_size);
+    match DeflateDecoder::new(body).take(sys_size as u64).read_to_end(&mut out) {
+        Ok(_) if !out.is_empty() => {}
+        Ok(_) => out = body.get(..sys_size.min(body.len())).unwrap_or(&[]).to_vec(),
+        Err(_) if out.is_empty() => out = body.get(..sys_size.min(body.len())).unwrap_or(&[]).to_vec(),
+        Err(_) => bail!(
+            "corrupt deflate stream: inflated {} of an expected {} system bytes before failing",
+            out.len(),
+            sys_size
+        ),
+    }
+    if out.len() < sys_size {
+        bail!("Decompressed size {} < expected system size {}", out.len(), sys_size);
+    }
+    Ok(out)
+}
+
 /// Helper to decompress and prepare RSC7 resource sections.
 pub fn prepare_rsc7(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     if data.len() < 16 {
