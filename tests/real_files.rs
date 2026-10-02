@@ -241,3 +241,46 @@ fn path_nodes_round_trip() {
     }
     println!("{} files: {identical} rewritten byte-identical to retail, {rewritten} laid out differently", files.len());
 }
+
+/// `RAGE_TEST_HEIGHTMAP`: a retail `heightmap*.dat` (a file, or a
+/// directory of them) decodes and writes back byte for byte.
+#[test]
+#[ignore]
+fn heightmap_round_trips() {
+    use rage_formats::{parse_heightmap, serialize_heightmap};
+    let Ok(path) = std::env::var("RAGE_TEST_HEIGHTMAP") else { return };
+    let path = std::path::PathBuf::from(path);
+    let files: Vec<std::path::PathBuf> = if path.is_dir() {
+        std::fs::read_dir(&path).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "dat")).collect()
+    } else {
+        vec![path]
+    };
+    assert!(!files.is_empty());
+    for file in files {
+        let data = std::fs::read(&file).unwrap();
+        let h = parse_heightmap(&data).unwrap();
+        let land = h.max_heights.iter().filter(|&&v| v != 0).count();
+        println!("{}: {}x{} over {:?}..{:?}, {} cells with ground, {}", file.display(), h.width, h.height, h.bb_min, h.bb_max, land,
+            if h.little_endian { "little-endian" } else { "big-endian" });
+        assert!(land > 0);
+        assert!(h.max_heights.iter().zip(&h.min_heights).all(|(hi, lo)| hi >= lo), "a min height above its max");
+        let back = serialize_heightmap(&h).unwrap();
+        assert_eq!(back.len(), data.len(), "{}: length differs", file.display());
+        let first = back.iter().zip(&data).position(|(a, b)| a != b);
+        assert_eq!(first, None, "{}: first differing byte", file.display());
+    }
+}
+
+/// `RAGE_TEST_WATER`: a retail `water*.xml` lists its quads.
+#[test]
+#[ignore]
+fn water_xml_parses() {
+    use rage_formats::parse_water_xml;
+    let Ok(path) = std::env::var("RAGE_TEST_WATER") else { return };
+    let text = std::fs::read_to_string(&path).unwrap();
+    let water = parse_water_xml(&text).unwrap();
+    println!("{} water quads, {} calming, {} wave", water.quads.len(), water.calming_quads.len(), water.wave_quads.len());
+    assert!(!water.quads.is_empty());
+    assert!(water.quads.iter().all(|q| q.min_x < q.max_x && q.min_y < q.max_y), "a quad with no area");
+}

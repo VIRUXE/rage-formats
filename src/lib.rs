@@ -27,6 +27,8 @@ pub mod ymap;
 pub mod ynv;
 pub mod ynd;
 pub mod cache_dat;
+pub mod heightmap;
+pub mod water;
 pub mod value;
 pub mod pso;
 pub mod meta_schema;
@@ -84,6 +86,8 @@ pub use ynd::{parse_ynd, serialize_ynd, ynd_to_xml, ynd_from_xml, dump_ynd_xml, 
               ISLAND_FLAG as YND_ISLAND_FLAG, Heightmap, NodeDictionary, NodeJunctionRef, NodeSpecial, NodeSpeed,
               PathJunction, PathLink, PathNode, Ynd};
 pub use cache_dat::{parse_cache_dat, BoundsStoreItem, CacheDat, CacheFileDate, InteriorProxy, MapDataNode};
+pub use heightmap::{parse_heightmap, serialize_heightmap, WorldHeightmap};
+pub use water::{parse_water_xml, CalmingQuad, WaterData, WaterQuad, WaveQuad};
 pub use value::{MetaArray, MetaDump, MetaStruct, MetaValue};
 pub use pso::{dump_pso, is_pso, parse_pso, PsoFile, PSO_MAGIC};
 pub use meta_schema::{dump_meta, parse_meta, HashSite, MetaFile};

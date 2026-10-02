@@ -26,7 +26,7 @@ rage-formats = "0.4"
 | `.ybn` collision | yes | | `parse_ybn` | the `phBound` tree; `Ybn::triangles()` flattens it to world space |
 | `.ynv` navmesh | yes | yes | `parse_ynv`, `serialize_ynv` | `Ynv`: polygons with vertices, flags and edge adjacency, portals, points |
 | `.ynd` path nodes | yes | yes | `parse_ynd`, `serialize_ynd`, `ynd_to_xml`, `ynd_from_xml` | `Ynd`: nodes with positions, street hashes, flags and their links; junction heightmaps; CodeWalker's `<NodeDictionary>` XML both ways |
-| `.ymap` placements | yes | | `parse_ymap`, `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapHeader` (name, parent, flags, extents); `YmapEntity` per entity, with `to_world()`; `MloInstance` per interior, with its default entity sets |
+| `.ymap` placements | yes | | `parse_ymap`, `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapHeader` (name, parent, flags, extents); `YmapEntity` per entity, with `to_world()` and its LOD fields (`lod_dist`, `child_lod_dist`, `lod_level`, `num_children`, `parent_index`); `MloInstance` per interior, with its default entity sets |
 | `.ytyp` archetypes | yes | | `parse_ytyp` | every archetype's box and texture dictionary; each MLO's entities, named rooms, portals and entity sets |
 | `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo`: each slot's drawables and textures, and their file names by CodeWalker's rules (`uppr_001_r`, `uppr_diff_001_a_whi`) |
 | `vehicles.meta` | yes | | `parse_vehicles_meta` | `VehicleInitData` per model, every member CodeWalker's `VehiclesFile` reads |
@@ -39,6 +39,8 @@ rage-formats = "0.4"
 | any PSO file (`ymf`, `pso`, `ymt`) | yes | | `dump_pso`, `to_xml`, `to_json` | the same tree from the big-endian container |
 | `gtxd.ymt` / `gtxd.meta` | yes | | `parse_txd_relationships` | texture dictionary parent chain |
 | `cache_y.dat` world cache | yes | | `parse_cache_dat` | `CacheDat`: every map file's parent and extents, every placed interior (archetype, placing map, position, rotation, box), every collision file's bounds |
+| `heightmap.dat` world heightmap | yes | yes | `parse_heightmap`, `serialize_heightmap` | `WorldHeightmap`: the highest and lowest ground per cell, scaled into the file's box; `max_height_at`, `cell_size` |
+| `water.xml` water surface | yes | | `parse_water_xml` | `WaterData`: the water, calming and wave quads, as CodeWalker's `Water.cs` reads them |
 | RSC7 container | yes | yes | `prepare_rsc7`, `build_rsc7`, `build_rsc7_paged` | sections in, a valid file out; `is_fxap` names an escrowed FiveM asset instead |
 
 Hashing is `rage_joaat`, the Jenkins one-at-a-time every name in these
@@ -277,6 +279,26 @@ println!("{} maps, {} collision files", cache.map_nodes.len(), cache.bounds.len(
 Maps loaded by script (heist apartments, some story interiors) are in no
 cache file, so a complete list of placements still has to read those maps.
 
+### World heightmap and water
+
+`heightmap.dat` and `heightmapheistisland.dat` (in `update.rpf/common/data/levels/gta5`)
+are a coarse grid of the highest and lowest ground, one byte each per cell,
+read and written as CodeWalker's `HeightmapFile` does; `water.xml` and
+`water_heistisland.xml` (`common.rpf` and `update.rpf` under
+`data/levels/gta5`) are the water quads the game draws.
+
+```rust
+use rage_formats::{parse_heightmap, parse_water_xml};
+
+let hm = parse_heightmap(&bytes)?;
+let (ix, iy) = (90, 120);
+println!("{:?} rises to {:.0} m", hm.position_of(ix, iy), hm.max_height_at(ix, iy).unwrap());
+
+let water = parse_water_xml(&std::fs::read_to_string("water.xml")?)?;
+let quads = water.quads.iter().filter(|q| q.intersects(-1700.0, -1200.0, -1100.0, -600.0)).count();
+println!("{quads} water quads over the docks");
+```
+
 ### Any Meta or PSO file, as XML or JSON
 
 Both containers carry their own schema, so any file decodes without a
@@ -395,12 +417,15 @@ RAGE_TEST_YMAP='C:\...\stream\ymap\interior_milo_.ymap' \
 RAGE_TEST_MLO_DIR='C:\...\stream' \
 RAGE_TEST_YMF='C:\...\stream\_manifest.ymf' \
 RAGE_TEST_YTYP='C:\...\stream\props.ytyp' \
+RAGE_TEST_HEIGHTMAP='C:\...\heightmap.dat' \
+RAGE_TEST_WATER='C:\...\water.xml' \
 cargo test --test real_files -- --ignored --nocapture
 ```
 
-They print what they found, assert the navmesh and path node round trips
-(`RAGE_TEST_YND` may name a folder of cells), and check that
-the generic dump of the map and type files names every structure member.
+They print what they found, assert the navmesh, path node and heightmap
+round trips (`RAGE_TEST_YND` may name a folder of cells, `RAGE_TEST_HEIGHTMAP`
+a folder of heightmaps), and check that the generic dump of the map and type
+files names every structure member.
 
 ## License
 

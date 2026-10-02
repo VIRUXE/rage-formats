@@ -31,11 +31,35 @@ pub struct YmapEntity {
     pub scale_z: f32,
     pub parent_index: i32,
     pub lod_dist: f32,
+    /// How close the camera must be before this entity's LOD children are
+    /// drawn in its place; negative means half of `lod_dist`
+    /// (`YmapEntityDef.ChildLodDist`).
+    pub child_lod_dist: f32,
+    /// `rage__eLodType`: see the `LOD_*` constants.
+    pub lod_level: u32,
+    pub num_children: u32,
     /// True for a `CMloInstanceDef` (an interior placement).
     pub is_mlo_instance: bool,
 }
 
 impl YmapEntity {
+    pub const LOD_HD: u32 = 0;
+    pub const LOD_LOD: u32 = 1;
+    pub const LOD_SLOD1: u32 = 2;
+    pub const LOD_SLOD2: u32 = 3;
+    pub const LOD_SLOD3: u32 = 4;
+    pub const LOD_ORPHANHD: u32 = 5;
+    pub const LOD_SLOD4: u32 = 6;
+
+    /// The `LODTYPES_DEPTH_*` names, by level.
+    pub const LOD_NAMES: [&'static str; 7] = ["hd", "lod", "slod1", "slod2", "slod3", "orphanhd", "slod4"];
+
+    /// `flags` bit 3: the entity's LOD parent lives in the parent `.ymap`,
+    /// not this one (`YmapEntityDef.LodInParentYmap`).
+    pub fn lod_in_parent_ymap(&self) -> bool {
+        self.flags & (1 << 3) != 0
+    }
+
     /// Transforms an entity-local point into world space (scale, then the
     /// stored rotation, then translation). Map entities store the *inverse*
     /// rotation, so the conjugate is applied — matching CodeWalker's
@@ -244,6 +268,9 @@ pub(crate) fn read_entity(e: &[u8], is_mlo_instance: bool) -> YmapEntity {
         scale_z: f32_le(e, 68),
         parent_index: u32_le(e, 72) as i32,
         lod_dist: f32_le(e, 76),
+        child_lod_dist: f32_le(e, 80),
+        lod_level: u32_le(e, 84),
+        num_children: u32_le(e, 88),
         is_mlo_instance,
     }
 }
@@ -260,6 +287,49 @@ pub mod tests {
     /// `CEntityDef` per `(archetype name, position, yaw degrees)`, flags 32
     /// (static), lod distance 100. The map's extents are the entities'.
     pub fn sample_exterior_ymap(name: &str, entities: &[(&str, Vec3, f32)]) -> Vec<u8> {
+        let entities: Vec<SampleEntity> = entities
+            .iter()
+            .map(|(archetype, position, yaw)| SampleEntity { archetype, position: *position, yaw: *yaw, ..SampleEntity::default() })
+            .collect();
+        sample_lod_ymap(name, None, &entities)
+    }
+
+    /// One entity of [`sample_lod_ymap`]: the plain fixture's archetype,
+    /// position and heading, plus the LOD fields a hierarchy needs.
+    #[derive(Debug, Clone, Copy)]
+    pub struct SampleEntity<'a> {
+        pub archetype: &'a str,
+        pub position: Vec3,
+        pub yaw: f32,
+        /// `flags`; 32 (static) by default, `| 8` for a parent in the parent map.
+        pub flags: u32,
+        pub parent_index: i32,
+        pub lod_dist: f32,
+        pub child_lod_dist: f32,
+        pub lod_level: u32,
+        pub num_children: u32,
+    }
+
+    impl Default for SampleEntity<'_> {
+        fn default() -> Self {
+            SampleEntity {
+                archetype: "",
+                position: Vec3::new(0.0, 0.0, 0.0),
+                yaw: 0.0,
+                flags: 32,
+                parent_index: -1,
+                lod_dist: 100.0,
+                child_lod_dist: -1.0,
+                lod_level: YmapEntity::LOD_HD,
+                num_children: 0,
+            }
+        }
+    }
+
+    /// A `.ymap` called `name`, the LOD child of `parent` when given, placing
+    /// `entities` with every LOD field as asked. The map's extents are the
+    /// entities'.
+    pub fn sample_lod_ymap(name: &str, parent: Option<&str>, entities: &[SampleEntity]) -> Vec<u8> {
         let count = entities.len();
         let entity_bytes = count * 128;
         let ptr_bytes = (count * 8).max(8);
@@ -281,9 +351,14 @@ pub mod tests {
 
         let m = blocks[0].1;
         put_u32(&mut sys, m + 8, rage_joaat(name));
+        if let Some(parent) = parent {
+            put_u32(&mut sys, m + 12, rage_joaat(parent));
+            put_u32(&mut sys, m + 16, YmapHeader::FLAG_LOD);
+        }
         put_u32(&mut sys, m + 20, 1); // contentFlags: HD
         let (mut lo, mut hi) = (Vec3::new(f32::MAX, f32::MAX, f32::MAX), Vec3::new(f32::MIN, f32::MIN, f32::MIN));
-        for (_, p, _) in entities {
+        for e in entities {
+            let p = e.position;
             lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
             hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
         }
@@ -294,22 +369,38 @@ pub mod tests {
         if count > 0 {
             put_array(&mut sys, m + 96, 1, count as u16);
         }
-        for (n, (archetype, position, yaw)) in entities.iter().enumerate() {
+        for (n, ent) in entities.iter().enumerate() {
             put_u64(&mut sys, ptr_off + n * 8, 3 | ((n * 128) as u64) << 12);
             let e = ent_off + n * 128;
-            put_u32(&mut sys, e + 8, rage_joaat(&archetype.to_lowercase()));
-            put_u32(&mut sys, e + 12, 32);
-            put_vec3(&mut sys, e + 32, *position);
+            put_u32(&mut sys, e + 8, rage_joaat(&ent.archetype.to_lowercase()));
+            put_u32(&mut sys, e + 12, ent.flags);
+            put_vec3(&mut sys, e + 32, ent.position);
             // Stored as the inverse: a heading of +yaw is stored as -yaw.
-            let half = -yaw.to_radians() / 2.0;
+            let half = -ent.yaw.to_radians() / 2.0;
             put_f32(&mut sys, e + 56, half.sin());
             put_f32(&mut sys, e + 60, half.cos());
             put_f32(&mut sys, e + 64, 1.0);
             put_f32(&mut sys, e + 68, 1.0);
-            put_u32(&mut sys, e + 72, -1i32 as u32);
-            put_f32(&mut sys, e + 76, 100.0);
+            put_u32(&mut sys, e + 72, ent.parent_index as u32);
+            put_f32(&mut sys, e + 76, ent.lod_dist);
+            put_f32(&mut sys, e + 80, ent.child_lod_dist);
+            put_u32(&mut sys, e + 84, ent.lod_level);
+            put_u32(&mut sys, e + 88, ent.num_children);
         }
         build_rsc7(2, &sys, &[])
+    }
+
+    #[test]
+    fn the_lod_fixture_writes_the_hierarchy_fields() {
+        let lod = SampleEntity { archetype: "slod_block", lod_dist: 800.0, child_lod_dist: 300.0, lod_level: YmapEntity::LOD_LOD, num_children: 1, ..SampleEntity::default() };
+        let hd = SampleEntity { archetype: "prop_a", position: Vec3::new(1.0, 2.0, 3.0), parent_index: 0, flags: 32 | 8, ..SampleEntity::default() };
+        let ymap = parse_ymap(&sample_lod_ymap("child_map", Some("parent_map"), &[lod, hd])).unwrap();
+        assert_eq!(ymap.header.parent_hash, rage_joaat("parent_map"));
+        assert_eq!(ymap.header.flags, YmapHeader::FLAG_LOD);
+        let [a, b] = ymap.entities.as_slice() else { panic!("two entities") };
+        assert_eq!((a.lod_dist, a.child_lod_dist, a.lod_level, a.num_children), (800.0, 300.0, YmapEntity::LOD_LOD, 1));
+        assert_eq!((b.parent_index, b.lod_level, b.child_lod_dist), (0, YmapEntity::LOD_HD, -1.0));
+        assert!(b.lod_in_parent_ymap() && !a.lod_in_parent_ymap());
     }
 
     #[test]
@@ -354,7 +445,8 @@ pub mod tests {
         let h = std::f32::consts::FRAC_1_SQRT_2;
         let e = YmapEntity {
             archetype_hash: 0, flags: 0, guid: 0, position: Vec3::new(10.0, 20.0, 30.0),
-            rotation: [0.0, 0.0, h, h], scale_xy: 1.0, scale_z: 1.0, parent_index: -1, lod_dist: 0.0, is_mlo_instance: true,
+            rotation: [0.0, 0.0, h, h], scale_xy: 1.0, scale_z: 1.0, parent_index: -1, lod_dist: 0.0,
+            child_lod_dist: -1.0, lod_level: 0, num_children: 0, is_mlo_instance: true,
         };
         // Stored quaternion is the inverse, so a +90° store rotates -90°.
         let p = e.to_world(Vec3::new(1.0, 0.0, 0.0));
