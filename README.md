@@ -28,7 +28,12 @@ rage-formats = "0.4"
 | `.ynd` path nodes | yes | yes | `parse_ynd`, `serialize_ynd`, `ynd_to_xml`, `ynd_from_xml` | `Ynd`: nodes with positions, street hashes, flags and their links; junction heightmaps; CodeWalker's `<NodeDictionary>` XML both ways |
 | `.ymap` placements | yes | | `parse_ymap`, `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapHeader` (name, parent, flags, extents); `YmapEntity` per entity, with `to_world()`; `MloInstance` per interior, with its default entity sets |
 | `.ytyp` archetypes | yes | | `parse_ytyp` | every archetype's box and texture dictionary; each MLO's entities, named rooms, portals and entity sets |
-| `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo` |
+| `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo`: each slot's drawables and textures, and their file names by CodeWalker's rules (`uppr_001_r`, `uppr_diff_001_a_whi`) |
+| `vehicles.meta` | yes | | `parse_vehicles_meta` | `VehicleInitData` per model, every member CodeWalker's `VehiclesFile` reads |
+| `carcols.ymt` / `.meta` | yes | | `parse_carcols` | `CarCols`: colours, metallic and window settings, plates, lights, sirens, mod kits with liveries, wheels, xenon colours |
+| `carvariations.ymt` / `.meta` | yes | | `parse_carvariations` | per model: colour combinations with livery flags, kits, plate probabilities |
+| `carmodcols.ymt` | yes | | `parse_carmodcols` | the mod shop colour menus |
+| `peds.ymt` / `peds.meta` | yes | | `parse_peds_meta` | `PedInitData` per ped, every member CodeWalker's `PedsFile` reads |
 | `_manifest.ymf` | yes | | `parse_ymf` | `Manifest`: map/type dependencies, HD texture bindings, interior collision lists — from PSO, RBF, Meta or XML |
 | any Meta file (`ytyp`, `ymap`, `ymt`) | yes | | `dump_meta`, `to_xml`, `to_json` | the whole file as a `MetaValue` tree from its own schema, with names from `NameTable` |
 | any PSO file (`ymf`, `pso`, `ymt`) | yes | | `dump_pso`, `to_xml`, `to_json` | the same tree from the big-endian container |
@@ -297,6 +302,15 @@ from its `MetaNames` table and each verified against its hash — `itemType` nam
 such a table), and `NameTable::add_list` takes more (one name per line), so
 content names — archetypes, texture dictionaries — can be supplied by
 whoever knows them. `from_xml` reads the XML layout back into a tree.
+
+The vehicle and ped metadata readers above are built on that tree:
+`meta_read::parse_tree` reads a PSO stream, an RSC7 Meta resource or the
+XML layout into one `MetaValue`, and the `Fields` helpers read members by
+name whichever form they came in (an XML `<indices>0 1 2</indices>` and a
+PSO byte array both come back as bytes; an enum by its name or its value).
+`meta_enum!` defines an enum with CodeWalker's member names and values
+plus an `Unknown` for anything else, as `VehicleModBone` and the other
+carcols enums are.
 
 The same schema walk knows where every hash-typed field sits, so a name can
 be changed without rewriting the file: `meta_schema::replace_hashes` and

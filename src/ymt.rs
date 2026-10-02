@@ -265,11 +265,13 @@ pub fn parse_ymt(data: &[u8]) -> Result<(PedVariationInfo, Vec<u8>, Vec<u8>)> {
                         if tex_data_count > 0 && tex_data_ptr.block_id > 0 {
                             let t_block_idx = tex_data_ptr.block_id - 1;
                             if let Some(tex_block) = meta.blocks.get(t_block_idx) {
+                                // CPVTextureData is 3 bytes (texId, distribution, padding),
+                                // packed at that stride, as CodeWalker's struct says.
                                 for k in 0..tex_data_count {
-                                    let t_offset = tex_data_ptr.offset + (k * 8);
-                                    if t_offset + 8 > tex_block.data.len() { continue; }
-                                    let tex_id = u32_le(&tex_block.data, t_offset);
-                                    let distribution = tex_block.data[t_offset + 4];
+                                    let t_offset = tex_data_ptr.offset + (k * 3);
+                                    if t_offset + 3 > tex_block.data.len() { continue; }
+                                    let tex_id = u32::from(tex_block.data[t_offset]);
+                                    let distribution = tex_block.data[t_offset + 1];
                                     textures.push(TextureData { tex_id, distribution });
                                 }
                             }
@@ -403,6 +405,9 @@ mod tests {
         assert_eq!(head.texture_name(0, 0, 0).as_deref(), Some("head_diff_000_a_whi"));
         let uppr = &info.component(3).unwrap().drawables[1];
         assert_eq!(uppr.drawable_name(3, 1, 0), "uppr_001_r");
+        let hair = &info.component(2).unwrap().drawables[0];
+        assert_eq!(hair.texture_name(2, 0, 0).as_deref(), Some("hair_diff_000_a_uni"), "hair texId is 0: 3-byte entries");
+        assert_eq!(hair.texture_name(2, 0, 1).as_deref(), Some("hair_diff_000_b_uni"));
         let ydd = crate::ydd::parse_ydd(&std::fs::read(dir.join("a_m_y_acult_01.ydd")).unwrap()).unwrap();
         let hashes: Vec<u32> = ydd.iter().map(|e| e.hash).collect();
         for slot in 0..12 {
