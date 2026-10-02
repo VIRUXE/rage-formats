@@ -16,6 +16,12 @@ pub mod yft;
 pub mod ymt;
 pub mod ytyp;
 pub mod gtxd;
+pub mod meta_read;
+pub mod peds;
+pub mod vehicles;
+pub mod carcols;
+pub mod carvariations;
+pub mod carmodcols;
 pub mod ybn;
 pub mod ymap;
 pub mod ynv;
@@ -59,7 +65,13 @@ pub use ydd::{parse_ydd, parse_ydr, parse_drawables, Drawable, DrawableBounds, D
               VertexBufferLayout, VertexComponent, VertexComponentType, VertexDeclaration,
               VertexSemantic, BUMP_SAMPLER, DIFFUSE_SAMPLER, SPEC_SAMPLER, TEXTURE_SAMPLER};
 pub use yft::{parse_yft, wheel_slot, Fragment, FragmentChild, FragmentPart, WheelSlot};
-pub use ymt::{parse_ymt, PedVariationInfo};
+pub use ymt::{parse_ymt, PedVariationInfo, PED_COMPONENT_NAMES};
+pub use peds::{parse_peds_meta, MultiTxdRelationship, PedInitData, PedsMeta};
+pub use vehicles::{parse_vehicles_meta, VehicleDriver, VehicleInitData, VehicleOverrideRagdollThreshold, VehiclesMeta};
+pub use carcols::{parse_carcols, CarCols, VehicleKit, VehicleModelColor};
+pub use carvariations::{parse_carvariations, CarVariations, ColorCombination, VehicleVariation};
+pub use carmodcols::{parse_carmodcols, CarModCols, VehicleModColor};
+pub use meta_read::{parse_tree, Fields, MetaEnum};
 pub use ytyp::{parse_archetype_txds, parse_ytyp, Archetype, ArchetypeTxd, MloDef, MloEntitySet, MloPortal, MloRoom, Ytyp};
 pub use gtxd::{parse_txd_relationships, TxdRelationship};
 pub use ymap::{parse_ymap, parse_ymap_entities, parse_ymap_header, parse_ymap_mlo_instances, set_map_name, MloInstance, Ymap, YmapEntity, YmapHeader};
