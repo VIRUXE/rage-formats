@@ -365,7 +365,8 @@ let rebuilt = build_ydr_from_xml(&xml, Some(dds_dir))?;
 
 Parity: build accepts every valid document CodeWalker's `XmlYdr.GetYdr` /
 `XmlYbn.GetYbn` accept; dump emits everything `YdrXml.GetXml` / `YbnXml.GetXml`
-emit. Legacy PC resources only. Writing re-derives what a file read from disk
+emit. Legacy PC resources only (a Gen9 `.ytd` converts with
+`convert_ytd_to_legacy`; see `gen9::Edition`). Writing re-derives what a file read from disk
 lacks (a bound's BVH and polygon order), so take any comparison XML from the
 graph after `write_ydr` / `write_ybn`.
 

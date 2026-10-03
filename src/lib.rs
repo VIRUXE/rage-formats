@@ -11,6 +11,7 @@ pub mod resource;
 pub mod blocks;
 pub mod vertex;
 pub mod ytd;
+pub mod gen9;
 pub mod ydd;
 pub mod yft;
 pub mod ymt;
@@ -55,6 +56,8 @@ pub use resource::{build_rsc7, build_rsc7_with_flags, pack_pages, rsc7_page_coun
                    RSC7_MAGIC, RSC8_MAGIC, SYSTEM_BASE, GRAPHICS_BASE};
 pub use ytd::{parse_ytd, parse_ytd_system, serialize_ytd, full_mip_count, level_size, mip_chain_size, stride_for, to_dds_layout, to_ytd_layout, ytd_chain_size, TextureFormat, YtdTexture, YTD_VERSION};
 pub use dds::parse_dds;
+pub use gen9::Edition;
+pub use blocks::texture::convert_ytd_to_legacy;
 pub use schema::Schema;
 pub use meta_write::{build_meta, Written, META_VERSION};
 pub use pso_write::build_pso;

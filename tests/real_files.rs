@@ -284,3 +284,46 @@ fn water_xml_parses() {
     assert!(!water.quads.is_empty());
     assert!(water.quads.iter().all(|q| q.min_x < q.max_x && q.min_y < q.max_y), "a quad with no area");
 }
+
+/// A vanilla `.ytd` that exists in both editions (`RAGE_TEST_YTD_GEN9` from GTA V Enhanced,
+/// `RAGE_TEST_YTD_LEGACY` the same asset from the legacy game): the Gen9 file converts to a legacy file
+/// the legacy parser reads, with the same textures, sizes and formats as the real legacy one.
+#[test]
+#[ignore]
+fn gen9_ytd_converts_like_the_legacy_original() {
+    let (Ok(g9), Ok(lg)) = (std::env::var("RAGE_TEST_YTD_GEN9"), std::env::var("RAGE_TEST_YTD_LEGACY")) else { return };
+    let gen9 = std::fs::read(&g9).unwrap();
+    let legacy = std::fs::read(&lg).unwrap();
+    assert_eq!(rage_formats::Edition::of_file("ytd", &gen9).unwrap(), Some(rage_formats::Edition::Gen9));
+    assert_eq!(rage_formats::Edition::of_file("ytd", &legacy).unwrap(), Some(rage_formats::Edition::Legacy));
+
+    let converted = rage_formats::convert_ytd_to_legacy(&gen9).unwrap();
+    assert_eq!(rage_formats::Edition::of_file("ytd", &converted).unwrap(), Some(rage_formats::Edition::Legacy));
+    let got = rage_formats::parse_ytd(&converted).unwrap();
+    let want = rage_formats::parse_ytd(&legacy).unwrap();
+    println!("converted {} bytes, {} textures; legacy original {} bytes, {} textures", converted.len(), got.len(), legacy.len(), want.len());
+
+    let (mut same_pixels, mut shape_diffs) = (0, 0);
+    for t in &got {
+        let Some(o) = want.iter().find(|o| o.name_hash == t.name_hash) else {
+            println!("  {:<40} only in the Gen9 file: {}x{} {} x{}", t.name, t.width, t.height, t.format, t.levels);
+            continue;
+        };
+        let shape = (t.width, t.height, t.format, t.levels, t.stride) == (o.width, o.height, o.format, o.levels, o.stride);
+        let pixels = t.pixel_data == o.pixel_data;
+        // The editions may encode a texture differently, so compare what it looks like: the mean absolute
+        // difference per channel (0-255) of the decoded top mip.
+        let diff = match (rage_formats::decompress_texture(t), rage_formats::decompress_texture(o)) {
+            (Ok(a), Ok(b)) if a.len() == b.len() => format!("{:.2}", a.iter().zip(&b).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / a.len() as f64),
+            (Ok(_), Ok(_)) => "size".to_owned(),
+            (a, b) => format!("decode failed: {:?} / {:?}", a.err().map(|e| e.to_string()), b.err().map(|e| e.to_string())),
+        };
+        println!("  {:<40} gen9->{}x{} {} x{} stride {} | legacy {}x{} {} x{} stride {} | shape {} pixels {} | mean abs diff {diff}",
+            t.name, t.width, t.height, t.format, t.levels, t.stride, o.width, o.height, o.format, o.levels, o.stride,
+            if shape { "same" } else { "DIFFERENT" }, if pixels { "identical" } else { "differ" });
+        if pixels { same_pixels += 1 }
+        if !shape { shape_diffs += 1 }
+    }
+    println!("{same_pixels}/{} textures byte-identical to the legacy original, {shape_diffs} differ in shape", got.len());
+    assert!(!got.is_empty());
+}

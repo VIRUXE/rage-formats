@@ -12,8 +12,29 @@ use super::base::{
 };
 use super::xml::{child, child_attr_u32, child_text, format_flags, parse_flags, Node, XmlOut};
 use super::*;
+use crate::gen9::Edition;
 use crate::rage_joaat;
-use crate::ytd::{TextureFormat, YtdTexture};
+use crate::resource::SYSTEM_BASE;
+use crate::ytd::{mip_chain_size, stride_for, to_ytd_layout, TextureFormat, YtdTexture, YTD_VERSION};
+
+/// A `.ytd` of either edition as a legacy `.ytd` (resource version 13), the Gen9 → Legacy conversion for
+/// texture dictionaries. A legacy file comes back unchanged. See [`Texture::read_gen9`] for what a Gen9
+/// texture becomes and what stops a conversion.
+///
+/// A Gen9 texture's `UsageData` low bits (the texture usage) carry over; the legacy usage *flags* and
+/// extra flags have no Gen9 source and are written as 0, as `serialize_ytd` writes them.
+pub fn convert_ytd_to_legacy(file: &[u8]) -> Result<Vec<u8>> {
+    match Edition::of_file("ytd", file)? {
+        Some(Edition::Legacy) => return Ok(file.to_vec()),
+        Some(Edition::Gen9) => {}
+        None => bail!("not a texture dictionary of a known edition"),
+    }
+    let mut r = Reader::open(file)?;
+    let mut g = Graph::new();
+    let dict = TextureDictionary::read_edition(&mut r, &mut g, SYSTEM_BASE, Edition::Gen9)?.context("the resource has no root block")?;
+    let pages = g.get::<TextureDictionary>(dict).pages.context("the dictionary has no pages info")?;
+    g.build(dict, pages, YTD_VERSION)
+}
 
 /// `TextureUsage`, indexed by value (`Texture.cs:1247`).
 pub const USAGE_NAMES: [&str; 30] = [
@@ -191,6 +212,48 @@ impl Texture {
         Ok(g.add(t))
     }
 
+    /// A Gen9 (Enhanced) texture, read into the legacy form: `TextureBase.Read` with `IsGen9`
+    /// (`Texture.cs:305`). The header is 80 bytes (width, height, format and the data pointer live in the
+    /// base, with no stride) followed by 48 bytes holding a shader resource view, which a legacy texture
+    /// has no use for.
+    ///
+    /// The format becomes its legacy twin ([`crate::gen9::legacy_texture_format`]), the stride is the
+    /// legacy one ([`stride_for`]) and the pixels, laid out by the slice pitch of every mip, are re-laid
+    /// out the way the legacy game stores a chain. A texture the legacy game cannot hold (cube map, 3D
+    /// texture, a format it lacks, a non-linear tile mode) is an error.
+    pub fn read_gen9(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
+        if va == 0 { return Ok(None); }
+        if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
+        let mut c = r.cursor(va)?;
+        c.skip(0x18);
+        let (width, height, depth) = (c.u16(), c.u16(), c.u16());
+        let (dimension, format, tile_mode, _aa, levels) = (c.u8(), c.u8(), c.u8(), c.u8(), c.u8());
+        c.skip(5);
+        let name_ptr = c.u64(); c.skip(8);
+        let data_ptr = c.u64();
+        let usage_data = c.u32();
+        c.check()?;
+        let name = read_string_block(r, g, name_ptr)?;
+        let name_hash = name.map_or(0, |n| rage_joaat(&g.get::<StringBlock>(n).0.to_lowercase()));
+        let label = name.map_or_else(|| "(unnamed)".to_owned(), |n| g.get::<StringBlock>(n).0.clone());
+        if dimension != 1 { bail!("texture '{label}': dimension {dimension} (2 is a cube map, 3 a volume); only 2D textures convert"); }
+        if tile_mode != 255 { bail!("texture '{label}': tile mode {tile_mode}; only linear (auto) textures convert"); }
+        let fmt = crate::gen9::legacy_texture_format(format).with_context(|| format!("texture '{label}'"))?;
+        let stride = stride_for(fmt, width, height);
+        let depth = depth.max(1);
+        let len = mip_chain_size(fmt, width, height, levels) * depth as usize;
+        let pixels = if data_ptr == 0 || len == 0 { Vec::new() } else {
+            let raw = r.bytes(data_ptr, len).with_context(|| format!("texture '{label}': pixel data"))?;
+            to_ytd_layout(fmt, width, height, stride, levels, &raw)
+        };
+        let data = if pixels.is_empty() { None } else { Some(g.add(TextureData { bytes: pixels })) };
+        let id = g.add(Texture {
+            vft: 0, name, name_hash, unknown_32h: 0, usage: (usage_data & 0x1F) as u8, usage_flags: 0, extra_flags: 0,
+            width, height, depth, stride, format: fmt, levels, data,
+        });
+        r.cache::<Self>(va, id); Ok(Some(id))
+    }
+
     pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
         if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
@@ -299,7 +362,11 @@ impl TextureDictionary {
         Ok(Self::from_textures(g, textures))
     }
 
-    pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
+    pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> { Self::read_edition(r, g, va, Edition::Legacy) }
+
+    /// `read` for a dictionary of either edition: the dictionary struct is the same in both, only its
+    /// textures differ ([`Texture::read_gen9`]).
+    pub fn read_edition(r: &mut Reader, g: &mut Graph, va: u64, edition: Edition) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
         if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
@@ -316,7 +383,10 @@ impl TextureDictionary {
             Some(id)
         } else {
             let ptrs = read_pointer_array64(r, g, textures_ptr, textures_count as usize)?;
-            let items = ptrs.into_iter().map(|p| Texture::read(r, g, p)).collect::<Result<Vec<_>>>()?;
+            let items = ptrs.into_iter().map(|p| match edition {
+                Edition::Legacy => Texture::read(r, g, p),
+                Edition::Gen9 => Texture::read_gen9(r, g, p),
+            }).collect::<Result<Vec<_>>>()?;
             let id = g.add(PointerArray64 { items });
             r.cache::<PointerArray64>(textures_ptr, id);
             Some(id)
@@ -370,6 +440,63 @@ mod tests {
         let d2 = TextureDictionary::read_xml(doc.root_element(), &mut g2, dir.path()).unwrap();
         let t2 = g2.get::<TextureDictionary>(d2).lookup(&g2, crate::rage_joaat("wall_a")).unwrap();
         assert_eq!(g2.get::<Texture>(t2).width, 4);
+    }
+
+    /// A Gen9 texture header (128 bytes) as the Enhanced game writes it, for the conversion tests.
+    struct Gen9Tex { name: BlockId, data: BlockId, width: u16, height: u16, levels: u8, format: u8, dimension: u8, tile: u8 }
+    impl Block for Gen9Tex {
+        fn length(&self) -> usize { 128 }
+        fn references(&self, _g: &Graph) -> Vec<BlockId> { vec![self.name, self.data] }
+        fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
+            w.u32(0); w.u32(1); w.u32(1); w.u32(0); w.u32(0x0026_0208); w.u32(0);
+            w.u16(self.width); w.u16(self.height); w.u16(1);
+            w.u8(self.dimension); w.u8(self.format); w.u8(self.tile); w.u8(0); w.u8(self.levels);
+            w.u8(0x28); w.u8(0); w.u8(0); w.u16(1);
+            w.u64(g.position(self.name)); w.u64(0); w.u64(g.position(self.data));
+            w.u32(20); w.u32(2); w.u64(0);
+            w.zeros(48);
+            Ok(())
+        }
+        fn as_any(&self) -> &dyn Any { self } fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    }
+
+    fn gen9_ytd(width: u16, height: u16, levels: u8, format: u8, dimension: u8, tile: u8, pixels: Vec<u8>) -> Vec<u8> {
+        let mut g = Graph::new();
+        let pages = g.add(PagesInfo::default());
+        let name = g.add(StringBlock("wall_a".into()));
+        let data = g.add(TextureData { bytes: pixels });
+        let tex = g.add(Gen9Tex { name, data, width, height, levels, format, dimension, tile });
+        let hashes = g.add(StructArray { items: vec![crate::rage_joaat("wall_a")] });
+        let textures = g.add(PointerArray64 { items: vec![Some(tex)] });
+        let dict = g.add(TextureDictionary { vft: 0, pages: Some(pages), hashes: Some(hashes), textures: Some(textures) });
+        g.build(dict, pages, 5).unwrap()
+    }
+
+    #[test]
+    fn a_gen9_dictionary_converts_to_a_legacy_one() {
+        // 8x8 BC1 with two mips: 2x2 blocks (32 bytes) then one block (8 bytes)
+        let pixels: Vec<u8> = (0..40).collect();
+        let file = gen9_ytd(8, 8, 2, 0x47, 1, 255, pixels.clone());
+        assert_eq!(Edition::of_file("ytd", &file).unwrap(), Some(Edition::Gen9));
+        let legacy = convert_ytd_to_legacy(&file).unwrap();
+        assert_eq!(Edition::of_file("ytd", &legacy).unwrap(), Some(Edition::Legacy));
+        let t = crate::parse_ytd(&legacy).unwrap();
+        assert_eq!(t.len(), 1);
+        let t = &t[0];
+        assert_eq!((t.name.as_str(), t.width, t.height, t.levels, t.format, t.stride), ("wall_a", 8, 8, 2, TextureFormat::DXT1, 4));
+        assert_eq!(t.pixel_data, pixels);
+        // converting a legacy file again changes nothing
+        assert_eq!(convert_ytd_to_legacy(&legacy).unwrap(), legacy);
+    }
+
+    #[test]
+    fn a_gen9_texture_the_legacy_game_cannot_hold_is_refused() {
+        let e = convert_ytd_to_legacy(&gen9_ytd(4, 4, 1, 0x5F, 1, 255, vec![0; 16])).unwrap_err();
+        assert!(format!("{e:#}").contains("BC6H_UF16"), "{e:#}");
+        let e = convert_ytd_to_legacy(&gen9_ytd(4, 4, 1, 0x47, 2, 255, vec![0; 8])).unwrap_err();
+        assert!(format!("{e:#}").contains("cube map"), "{e:#}");
+        let e = convert_ytd_to_legacy(&gen9_ytd(4, 4, 1, 0x47, 1, 7, vec![0; 8])).unwrap_err();
+        assert!(format!("{e:#}").contains("tile mode 7"), "{e:#}");
     }
 
     #[test]
