@@ -6,6 +6,7 @@
 //! `rage-render`'s.
 
 pub mod hash;
+pub mod renderware;
 pub mod math;
 pub mod resource;
 pub mod blocks;
