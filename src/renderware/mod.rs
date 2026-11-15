@@ -4,6 +4,11 @@ pub mod chunk;
 pub mod document;
 pub mod txd;
 pub mod raster;
+mod reader;
+pub mod plugins;
+pub mod geometry;
+pub mod dff;
+mod dff_drawable;
 pub use chunk::{parse_chunks, write_chunks, Chunk};
 pub use document::{Document, Format};
 

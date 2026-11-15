@@ -46,6 +46,9 @@ impl Document {
         if self.format==Format::Txd {
             if let Ok(txd)=super::txd::Txd::parse(&self.build()?) {value["textures"]=txd.editable_textures();}
         }
+        if self.format==Format::Dff {
+            if let Ok(dff)=super::dff::Dff::parse(&self.build()?){value["scene"]=dff.editable_scene();}
+        }
         Ok(value.pretty(2))
     }
 
@@ -67,7 +70,7 @@ impl Document {
         let padding = unhex(value["padding"].as_str().context("document needs hex padding")?)?;
         ensure!(padding.iter().all(|b| *b == 0), "only zero sector padding is permitted");
         for (key, _) in value.entries() {
-            if !matches!(key, "schema" | "format" | "chunks" | "padding" | "textures") { bail!("unrecognized document field '{key}'"); }
+            if !matches!(key, "schema" | "format" | "chunks" | "padding" | "textures" | "scene") { bail!("unrecognized document field '{key}'"); }
         }
         let doc = Self { format, chunks, padding };
         // Validate edited chunk lengths/tree as rigorously as binary inputs.
@@ -77,6 +80,10 @@ impl Document {
             let mut txd=super::txd::Txd::parse(&bytes)?;
             txd.apply_texture_edits(&value["textures"])?;
             bytes=txd.build()?;
+        }
+        if value.has_key("scene") {
+            ensure!(format==Format::Dff,"scene field requires DFF format");
+            let mut dff=super::dff::Dff::parse(&bytes)?;dff.apply_scene_edits(&value["scene"])?;bytes=dff.build()?;
         }
         Self::parse(&bytes, format)
     }
