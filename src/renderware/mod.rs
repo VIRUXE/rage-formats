@@ -2,6 +2,8 @@
 //! these codecs retain unknown chunks and never infer a platform from a name.
 pub mod chunk;
 pub mod document;
+pub mod txd;
+pub mod raster;
 pub use chunk::{parse_chunks, write_chunks, Chunk};
 pub use document::{Document, Format};
 

@@ -10,6 +10,12 @@ pub struct Chunk {
     pub payload: Vec<u8>,
 }
 
+/// Decode the RenderWare library stamp to 0xVRRPP (e.g. 0x36003).
+pub fn version_number(stamp:u32)->u32 {
+    if stamp&0xffff0000==0 {stamp<<8}
+    else {(((stamp>>14)&0x3ff00)+0x30000)|((stamp>>16)&0x3f)}
+}
+
 pub fn parse_chunks(data: &[u8]) -> Result<Vec<Chunk>> {
     let (chunks, padding) = parse_file_chunks(data, false)?;
     ensure!(padding.is_empty(), "unexpected padding");

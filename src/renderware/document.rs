@@ -39,10 +39,14 @@ impl Document {
         let chunks: Vec<_> = self.chunks.iter().map(|c| json::object! {
             kind: c.kind, version: c.version, payload: hex(&c.payload)
         }).collect();
-        Ok(json::object! {
+        let mut value=json::object! {
             schema: "rage-renderware/1", format: self.format.name(),
             chunks: json::JsonValue::Array(chunks), padding: hex(&self.padding)
-        }.pretty(2))
+        };
+        if self.format==Format::Txd {
+            if let Ok(txd)=super::txd::Txd::parse(&self.build()?) {value["textures"]=txd.editable_textures();}
+        }
+        Ok(value.pretty(2))
     }
 
     pub fn from_json(text: &str) -> Result<Self> {
@@ -63,11 +67,17 @@ impl Document {
         let padding = unhex(value["padding"].as_str().context("document needs hex padding")?)?;
         ensure!(padding.iter().all(|b| *b == 0), "only zero sector padding is permitted");
         for (key, _) in value.entries() {
-            if !matches!(key, "schema" | "format" | "chunks" | "padding") { bail!("unrecognized document field '{key}'"); }
+            if !matches!(key, "schema" | "format" | "chunks" | "padding" | "textures") { bail!("unrecognized document field '{key}'"); }
         }
         let doc = Self { format, chunks, padding };
         // Validate edited chunk lengths/tree as rigorously as binary inputs.
-        let bytes = doc.build()?;
+        let mut bytes = doc.build()?;
+        if value.has_key("textures") {
+            ensure!(format==Format::Txd,"textures field requires TXD format");
+            let mut txd=super::txd::Txd::parse(&bytes)?;
+            txd.apply_texture_edits(&value["textures"])?;
+            bytes=txd.build()?;
+        }
         Self::parse(&bytes, format)
     }
 
